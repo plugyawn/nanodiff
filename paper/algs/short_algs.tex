@@ -1,0 +1,90 @@
+% \begin{multicols}{2}
+%     \begin{algorithm}[H]
+%     \caption{BAR training}
+%     \label{alg:sar-train}
+%     \begin{algorithmic}
+%     \State \textbf{Input:} $\x_0 \sim q_0$, $L$ seq. len., $B$ \# of blocks
+%     \State $\M \gets \Mask(L, B)$ (Suppl. \ref{suppl:masks})
+%     \Repeat
+%         \State Sample $t_1, \dots, t_B \sim \mathcal{U}(0, 1)$
+%         \State $\x_t \sim q_t(\x_0)$
+%         \State $\x_{\text{full}} \gets \x_{t} \oplus \x_0$
+%         \State $\x_{\text{full}} = h_\theta(\x_{\text{full}}; \M)$
+%         \State Take gradient step on $\nabla_\theta \mathcal{L}_{BAR}(\x_{\text{full}})$
+        
+%     \Until{converged}
+%     \end{algorithmic}
+%     \end{algorithm}
+    
+%     \columnbreak
+    
+%     \begin{algorithm}[H]
+%     \caption{BAR Sampling}
+%     \label{alg:sar-inference}
+%     \begin{algorithmic}
+%     \State \textbf{Input:} $p_{\text{limit}}$, $T$ diffusion steps, $L$ seq.len, $B$ \# of blocks
+%     \State \textbf{Output:} $\tilde{\x}^0$ \vkl{can probably reduce \# of lines, e.g., drop this one}
+    
+%     \State $\tilde{\x}^0 \gets \emptyset$ 
+%     \State $K, V \gets \emptyset$  \Comment{KV cache}
+%     \State $\M \gets \textsc{BlockCausalMask}(L, B)$
+    
+%     \For{$b = 1$ to $B$}
+%         \State $\x_T \sim p_{\text{limit}}$ \vkl{what's p limit?}
+%         \State $\tilde{\x}_{0} \gets \tilde{\x}_0 \oplus \x_T$ \vkl{why do we need this?}
+
+%         \For{$t = T$ to $1$}
+%             \State $\tilde{\x}_0, K, V \gets h_\theta(\tilde{\x}_0, K, V, \M)$ \vkl{what is $h$? this doesn't sound right: the $t$ doesn't appear inside the loop, and also this doesn't look like an actual MDLM sampler}
+%         \EndFor
+%     \EndFor
+    
+% \State \Return $\tilde{\x}_0$
+% \end{algorithmic}
+% \end{algorithm}
+% \end{multicols}
+    
+
+\begin{multicols}{2}
+    \begin{algorithm}[H]
+    \caption{Block Diffusion Training}
+    \label{alg:sar-train}
+    \begin{algorithmic}
+    \State \textbf{Input:} datapoint $\x$, \# of blocks $B$, forward noise process $q_t(\cdot|\x)$, model $\x_\theta$, loss $\mathcal{L}_{\text{BD}}$
+    \Repeat
+        \State Sample $t_1, \dots, t_B \sim \mathcal{U}[0, 1]$
+        % \State Sample $\x_{t_1}^1, \dots, \x^B_{t_B} \sim q_{t_1}, \dots, q_{t_B}$
+        \State $\forall b \in \{1,...,B\}:$ $\x_{t_b}^b \sim q_{t_b}(\cdot|\x^b)$
+        \State $\emptyset, \mathbf{K}^{1:B}, \mathbf{V}^{1:B} \gets \x_\theta(\x)$ \Comment{KV cache}
+        \State $\forall b \text{: } \x_\text{logit}^b, \emptyset, \emptyset \gets \x_\theta^b(\x_{t_b}^b,  \mathbf{K}^{1:b\text{-}1}, \mathbf{V}^{1:b\text{-}1})$ 
+        \State Let $\x_\text{logit} \gets \x_\text{logit}^1 \oplus \dots \oplus \x^B_\text{logit}$
+        \State Take gradient step on $\nabla_\theta \mathcal{L}_{\text{BD}}(\x_{\text{logit}}; \theta)$
+        
+    \Until{converged}
+    \end{algorithmic}
+    \end{algorithm}
+    
+    \columnbreak
+    
+    \begin{algorithm}[H]
+    \caption{Block Diffusion Sampling}
+    \label{alg:sar-inference}
+    \begin{algorithmic}
+    \State \textbf{Input:} \# blocks $B$, model $\x_\theta$, diffusion sampling algorithm \textsc{Sample}
+    \vspace{3pt}
+    
+    \State $\x, \mathbf{K},\mathbf{V} \gets \emptyset$ \Comment{output \& KV cache}
+    \vspace{3pt}
+    \For{$b = 1$ to $B$}
+        % \State $\x_0^b, \mathbf{K}^b,\mathbf{V}^b \gets \textsc{Sample}(\x_\theta^b, \mathbf{K}^{:b\text{-}1},\mathbf{V}^{:b\text{-}1})$
+        \State $\x^b \gets \textsc{Sample}(\x_\theta^b, \mathbf{K}^{1:b\text{-}1},\mathbf{V}^{1:b\text{-}1})$
+        \State $\emptyset, \mathbf{K}^{b}, \mathbf{V}^{b} \gets \x_\theta^b(\x^b)$
+        \State $\x \gets \x^{1:b-1} \oplus \x^b $
+        \State $(\mathbf{K}, \mathbf{V}) \gets (\mathbf{K}^{1:b-1} \oplus \mathbf{K}^b, \mathbf{V}^{1:b-1} \oplus \mathbf{V}^b) $
+        % \State $\mathbf{V} \gets \mathbf{V}^{1:b-1} \oplus \mathbf{V}^b $
+    \EndFor
+    
+\State \Return $\x$
+\end{algorithmic}
+\end{algorithm}
+\end{multicols}
+    

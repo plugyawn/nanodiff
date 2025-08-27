@@ -1,0 +1,380 @@
+\begin{thebibliography}{72}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Achiam et~al.(2023)Achiam, Adler, Agarwal, Ahmad, Akkaya, Aleman, Almeida, Altenschmidt, Altman, Anadkat, et~al.]{achiam2023gpt}
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia~Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et~al.
+\newblock Gpt-4 technical report.
+\newblock \emph{arXiv preprint arXiv:2303.08774}, 2023.
+
+\bibitem[Austin et~al.(2021)Austin, Johnson, Ho, Tarlow, and Van Den~Berg]{austin2021structured}
+Jacob Austin, Daniel~D Johnson, Jonathan Ho, Daniel Tarlow, and Rianne Van Den~Berg.
+\newblock Structured denoising diffusion models in discrete state-spaces.
+\newblock \emph{Advances in Neural Information Processing Systems}, 34:\penalty0 17981--17993, 2021.
+
+\bibitem[Avdeyev et~al.(2023)Avdeyev, Shi, Tan, Dudnyk, and Zhou]{avdeyev2023dirichlet}
+Pavel Avdeyev, Chenlai Shi, Yuhao Tan, Kseniia Dudnyk, and Jian Zhou.
+\newblock Dirichlet diffusion score model for biological sequence generation.
+\newblock In \emph{International Conference on Machine Learning}, pp.\  1276--1301. PMLR, 2023.
+
+\bibitem[Bai et~al.(2022)Bai, Kadavath, Kundu, Askell, Kernion, Jones, Chen, Goldie, Mirhoseini, McKinnon, et~al.]{bai2022constitutional}
+Yuntao Bai, Saurav Kadavath, Sandipan Kundu, Amanda Askell, Jackson Kernion, Andy Jones, Anna Chen, Anna Goldie, Azalia Mirhoseini, Cameron McKinnon, et~al.
+\newblock Constitutional ai: Harmlessness from ai feedback.
+\newblock \emph{arXiv preprint arXiv:2212.08073}, 2022.
+
+\bibitem[Cai et~al.(2024)Cai, Li, Geng, Peng, Lee, Chen, and Dao]{cai2024medusa}
+Tianle Cai, Yuhong Li, Zhengyang Geng, Hongwu Peng, Jason~D Lee, Deming Chen, and Tri Dao.
+\newblock Medusa: Simple llm inference acceleration framework with multiple decoding heads.
+\newblock \emph{arXiv preprint arXiv:2401.10774}, 2024.
+
+\bibitem[Campbell et~al.(2022)Campbell, Benton, De~Bortoli, Rainforth, Deligiannidis, and Doucet]{campbell2022continuous}
+Andrew Campbell, Joe Benton, Valentin De~Bortoli, Thomas Rainforth, George Deligiannidis, and Arnaud Doucet.
+\newblock A continuous time framework for discrete denoising models.
+\newblock \emph{Advances in Neural Information Processing Systems}, 35:\penalty0 28266--28279, 2022.
+
+\bibitem[Chang et~al.(2022)Chang, Zhang, Jiang, Liu, and Freeman]{chang2022maskgit}
+Huiwen Chang, Han Zhang, Lu~Jiang, Ce~Liu, and William~T Freeman.
+\newblock Maskgit: Masked generative image transformer.
+\newblock In \emph{Proceedings of the IEEE/CVF conference on computer vision and pattern recognition}, pp.\  11315--11325, 2022.
+
+\bibitem[Chelba et~al.(2014)Chelba, Mikolov, Schuster, Ge, Brants, Koehn, and Robinson]{chelba2014billion}
+Ciprian Chelba, Tomas Mikolov, Mike Schuster, Qi~Ge, Thorsten Brants, Phillipp Koehn, and Tony Robinson.
+\newblock One billion word benchmark for measuring progress in statistical language modeling, 2014.
+
+\bibitem[Chen et~al.(2025)Chen, Mart{\'\i}~Mons{\'o}, Du, Simchowitz, Tedrake, and Sitzmann]{chen2025diffusion}
+Boyuan Chen, Diego Mart{\'\i}~Mons{\'o}, Yilun Du, Max Simchowitz, Russ Tedrake, and Vincent Sitzmann.
+\newblock Diffusion forcing: Next-token prediction meets full-sequence diffusion.
+\newblock \emph{Advances in Neural Information Processing Systems}, 37:\penalty0 24081--24125, 2025.
+
+\bibitem[Chen et~al.(2022)Chen, Zhang, and Hinton]{chen2022analog}
+Ting Chen, Ruixiang Zhang, and Geoffrey Hinton.
+\newblock Analog bits: Generating discrete data using diffusion models with self-conditioning.
+\newblock \emph{arXiv preprint arXiv:2208.04202}, 2022.
+
+\bibitem[Cohan et~al.(2018)Cohan, Dernoncourt, Kim, Bui, Kim, Chang, and Goharian]{Cohan_2018}
+Arman Cohan, Franck Dernoncourt, Doo~Soon Kim, Trung Bui, Seokhwan Kim, Walter Chang, and Nazli Goharian.
+\newblock A discourse-aware attention model for abstractive summarization of long documents.
+\newblock \emph{Proceedings of the 2018 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, Volume 2 (Short Papers)}, 2018.
+\newblock \doi{10.18653/v1/n18-2097}.
+\newblock URL \url{http://dx.doi.org/10.18653/v1/n18-2097}.
+
+\bibitem[Dai et~al.(2019)Dai, Yang, Yang, Carbonell, Le, and Salakhutdinov]{dai2019transformer}
+Zihang Dai, Zhilin Yang, Yiming Yang, Jaime Carbonell, Quoc~V Le, and Ruslan Salakhutdinov.
+\newblock Transformer-xl: Attentive language models beyond a fixed-length context.
+\newblock \emph{arXiv preprint arXiv:1901.02860}, 2019.
+
+\bibitem[Dao et~al.(2022)Dao, Fu, Ermon, Rudra, and R{\'e}]{dao2022flashattention}
+Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher R{\'e}.
+\newblock Flashattention: Fast and memory-efficient exact attention with io-awareness.
+\newblock \emph{Advances in Neural Information Processing Systems}, 35:\penalty0 16344--16359, 2022.
+
+\bibitem[Dhariwal \& Nichol(2021)Dhariwal and Nichol]{dhariwal2021diffusionmodelsbeatgans}
+Prafulla Dhariwal and Alex Nichol.
+\newblock Diffusion models beat gans on image synthesis, 2021.
+\newblock URL \url{https://arxiv.org/abs/2105.05233}.
+
+\bibitem[Dieleman et~al.(2022)Dieleman, Sartran, Roshannai, Savinov, Ganin, Richemond, Doucet, Strudel, Dyer, Durkan, et~al.]{dieleman2022continuous}
+Sander Dieleman, Laurent Sartran, Arman Roshannai, Nikolay Savinov, Yaroslav Ganin, Pierre~H Richemond, Arnaud Doucet, Robin Strudel, Chris Dyer, Conor Durkan, et~al.
+\newblock Continuous diffusion for categorical data.
+\newblock \emph{arXiv preprint arXiv:2211.15089}, 2022.
+
+\bibitem[Dong et~al.(2024)Dong, Feng, Guessous, Liang, and He]{dong2024flex}
+Juechu Dong, Boyuan Feng, Driss Guessous, Yanbo Liang, and Horace He.
+\newblock Flex attention: A programming model for generating optimized attention kernels.
+\newblock \emph{arXiv preprint arXiv:2412.05496}, 2024.
+
+\bibitem[Gloeckle et~al.(2024)Gloeckle, Idrissi, Rozi{\`e}re, Lopez-Paz, and Synnaeve]{gloeckle2024better}
+Fabian Gloeckle, Badr~Youbi Idrissi, Baptiste Rozi{\`e}re, David Lopez-Paz, and Gabriel Synnaeve.
+\newblock Better \& faster large language models via multi-token prediction.
+\newblock \emph{arXiv preprint arXiv:2404.19737}, 2024.
+
+\bibitem[Goel et~al.(2024)Goel, Thoutam, Marroquin, Gokaslan, Firouzbakht, Vincoff, Kuleshov, Kratochvil, and Chatterjee]{goel2024memdlm}
+Shrey Goel, Vishrut Thoutam, Edgar~Mariano Marroquin, Aaron Gokaslan, Arash Firouzbakht, Sophia Vincoff, Volodymyr Kuleshov, Huong~T Kratochvil, and Pranam Chatterjee.
+\newblock Memdlm: De novo membrane protein design with masked discrete diffusion protein language models.
+\newblock \emph{arXiv preprint arXiv:2410.16735}, 2024.
+
+\bibitem[Gokaslan et~al.(2019)Gokaslan, Cohen, Pavlick, and Tellex]{Gokaslan2019OpenWeb}
+Aaron Gokaslan, Vanya Cohen, Ellie Pavlick, and Stefanie Tellex.
+\newblock Openwebtext corpus.
+\newblock \url{http://Skylion007.github.io/OpenWebTextCorpus}, 2019.
+
+\bibitem[Gokaslan et~al.(2024)Gokaslan, Cooper, Collins, Seguin, Jacobson, Patel, Frankle, Stephenson, and Kuleshov]{gokaslan2024commoncanvas}
+Aaron Gokaslan, A~Feder Cooper, Jasmine Collins, Landan Seguin, Austin Jacobson, Mihir Patel, Jonathan Frankle, Cory Stephenson, and Volodymyr Kuleshov.
+\newblock Commoncanvas: Open diffusion models trained on creative-commons images.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, pp.\  8250--8260, 2024.
+
+\bibitem[Graves et~al.(2023)Graves, Srivastava, Atkinson, and Gomez]{graves2023bayesian}
+Alex Graves, Rupesh~Kumar Srivastava, Timothy Atkinson, and Faustino Gomez.
+\newblock Bayesian flow networks.
+\newblock \emph{arXiv preprint arXiv:2308.07037}, 2023.
+
+\bibitem[Gu et~al.(2017)Gu, Bradbury, Xiong, Li, and Socher]{gu2017non}
+Jiatao Gu, James Bradbury, Caiming Xiong, Victor~OK Li, and Richard Socher.
+\newblock Non-autoregressive neural machine translation.
+\newblock \emph{arXiv preprint arXiv:1711.02281}, 2017.
+
+\bibitem[Gu et~al.(2019)Gu, Wang, and Zhao]{gu2019levenshtein}
+Jiatao Gu, Changhan Wang, and Junbo Zhao.
+\newblock Levenshtein transformer.
+\newblock \emph{Advances in neural information processing systems}, 32, 2019.
+
+\bibitem[Gulrajani \& Hashimoto(2024)Gulrajani and Hashimoto]{gulrajani2024plaid}
+Ishaan Gulrajani and Tatsunori~B Hashimoto.
+\newblock Likelihood-based diffusion language models.
+\newblock \emph{Advances in Neural Information Processing Systems}, 36, 2024.
+
+\bibitem[Gupta et~al.(2023)Gupta, Yu, Sohn, Gu, Hahn, Fei-Fei, Essa, Jiang, and Lezama]{gupta2023photorealisticvideogenerationdiffusion}
+Agrim Gupta, Lijun Yu, Kihyuk Sohn, Xiuye Gu, Meera Hahn, Li~Fei-Fei, Irfan Essa, Lu~Jiang, and Jose Lezama.
+\newblock Photorealistic video generation with diffusion models, 2023.
+\newblock URL \url{https://arxiv.org/abs/2312.06662}.
+
+\bibitem[Han et~al.(2022)Han, Kumar, and Tsvetkov]{han2022ssd}
+Xiaochuang Han, Sachin Kumar, and Yulia Tsvetkov.
+\newblock Ssd-lm: Semi-autoregressive simplex-based diffusion language model for text generation and modular control.
+\newblock \emph{arXiv preprint arXiv:2210.17432}, 2022.
+
+\bibitem[Han et~al.(2023)Han, Kumar, Tsvetkov, and Ghazvininejad]{han2023ssd2}
+Xiaochuang Han, Sachin Kumar, Yulia Tsvetkov, and Marjan Ghazvininejad.
+\newblock David helps goliath: Inference-time collaboration between small specialized and large general diffusion lms.
+\newblock \emph{arXiv preprint arXiv:2305.14771}, 2023.
+
+\bibitem[Hao et~al.(2024)Hao, Sukhbaatar, Su, Li, Hu, Weston, and Tian]{hao2024training}
+Shibo Hao, Sainbayar Sukhbaatar, DiJia Su, Xian Li, Zhiting Hu, Jason Weston, and Yuandong Tian.
+\newblock Training large language models to reason in a continuous latent space.
+\newblock \emph{arXiv preprint arXiv:2412.06769}, 2024.
+
+\bibitem[He et~al.(2022)He, Sun, Wang, Huang, and Qiu]{he2022diffusionbert}
+Zhengfu He, Tianxiang Sun, Kuanning Wang, Xuanjing Huang, and Xipeng Qiu.
+\newblock Diffusionbert: Improving generative masked language models with diffusion models.
+\newblock \emph{arXiv preprint arXiv:2211.15029}, 2022.
+
+\bibitem[Ho \& Salimans(2022)Ho and Salimans]{ho2022classifier}
+Jonathan Ho and Tim Salimans.
+\newblock Classifier-free diffusion guidance.
+\newblock \emph{arXiv preprint arXiv:2207.12598}, 2022.
+
+\bibitem[Ho et~al.(2020)Ho, Jain, and Abbeel]{ho2020denoising}
+Jonathan Ho, Ajay Jain, and Pieter Abbeel.
+\newblock Denoising diffusion probabilistic models.
+\newblock \emph{Advances in neural information processing systems}, 33:\penalty0 6840--6851, 2020.
+
+\bibitem[Ho et~al.(2022)Ho, Salimans, Gritsenko, Chan, Norouzi, and Fleet]{ho2022video}
+Jonathan Ho, Tim Salimans, Alexey Gritsenko, William Chan, Mohammad Norouzi, and David~J Fleet.
+\newblock Video diffusion models.
+\newblock \emph{arXiv:2204.03458}, 2022.
+
+\bibitem[Hoogeboom et~al.(2021{\natexlab{a}})Hoogeboom, Gritsenko, Bastings, Poole, Berg, and Salimans]{hoogeboom2021autoregressive}
+Emiel Hoogeboom, Alexey~A Gritsenko, Jasmijn Bastings, Ben Poole, Rianne van~den Berg, and Tim Salimans.
+\newblock Autoregressive diffusion models.
+\newblock \emph{arXiv preprint arXiv:2110.02037}, 2021{\natexlab{a}}.
+
+\bibitem[Hoogeboom et~al.(2021{\natexlab{b}})Hoogeboom, Nielsen, Jaini, Forr{\'e}, and Welling]{hoogeboom2021argmax}
+Emiel Hoogeboom, Didrik Nielsen, Priyank Jaini, Patrick Forr{\'e}, and Max Welling.
+\newblock Argmax flows and multinomial diffusion: Learning categorical distributions.
+\newblock \emph{Advances in Neural Information Processing Systems}, 34:\penalty0 12454--12465, 2021{\natexlab{b}}.
+
+\bibitem[Israel et~al.(2025)Israel, Grover, and Broeck]{israel2025enabling}
+Daniel Israel, Aditya Grover, and Guy Van~den Broeck.
+\newblock Enabling autoregressive models to fill in masked tokens.
+\newblock \emph{arXiv preprint arXiv:2502.06901}, 2025.
+
+\bibitem[Kingma et~al.(2021)Kingma, Salimans, Poole, and Ho]{kingma2021variational}
+Diederik Kingma, Tim Salimans, Ben Poole, and Jonathan Ho.
+\newblock Variational diffusion models.
+\newblock \emph{Advances in neural information processing systems}, 34:\penalty0 21696--21707, 2021.
+
+\bibitem[Kong et~al.(2025)Kong, Zhao, Xu, Pang, Wang, Honig, Si, Li, Xie, Xie, et~al.]{kong2025scalable}
+Deqian Kong, Minglu Zhao, Dehong Xu, Bo~Pang, Shu Wang, Edouardo Honig, Zhangzhang Si, Chuan Li, Jianwen Xie, Sirui Xie, et~al.
+\newblock Scalable language models with posterior inference of latent thought vectors.
+\newblock \emph{arXiv preprint arXiv:2502.01567}, 2025.
+
+\bibitem[Kou et~al.(2024)Kou, Hu, He, Deng, and Zhang]{kou2024cllms}
+Siqi Kou, Lanxiang Hu, Zhezhi He, Zhijie Deng, and Hao Zhang.
+\newblock {CLLM}s: Consistency large language models.
+\newblock In \emph{Forty-first International Conference on Machine Learning}, 2024.
+\newblock URL \url{https://openreview.net/forum?id=8uzBOVmh8H}.
+
+\bibitem[Li et~al.(2022)Li, Thickstun, Gulrajani, Liang, and Hashimoto]{li2022diffusion}
+Xiang Li, John Thickstun, Ishaan Gulrajani, Percy~S Liang, and Tatsunori~B Hashimoto.
+\newblock Diffusion-lm improves controllable text generation.
+\newblock \emph{Advances in Neural Information Processing Systems}, 35:\penalty0 4328--4343, 2022.
+
+\bibitem[Li et~al.(2024)Li, Zhao, Wang, Scalia, Eraslan, Nair, Biancalani, Ji, Regev, Levine, et~al.]{li2024derivative}
+Xiner Li, Yulai Zhao, Chenyu Wang, Gabriele Scalia, Gokcen Eraslan, Surag Nair, Tommaso Biancalani, Shuiwang Ji, Aviv Regev, Sergey Levine, et~al.
+\newblock Derivative-free guidance in continuous and discrete diffusion models with soft value-based decoding.
+\newblock \emph{arXiv preprint arXiv:2408.08252}, 2024.
+
+\bibitem[Liu et~al.(2023)Liu, Li, Wu, and Lee]{liu2023visual}
+Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong~Jae Lee.
+\newblock Visual instruction tuning.
+\newblock \emph{Advances in neural information processing systems}, 36:\penalty0 34892--34916, 2023.
+
+\bibitem[Lou et~al.(2024)Lou, Meng, and Ermon]{lou2024discrete}
+Aaron Lou, Chenlin Meng, and Stefano Ermon.
+\newblock Discrete diffusion modeling by estimating the ratios of the data distribution.
+\newblock In \emph{Forty-first International Conference on Machine Learning}, 2024.
+\newblock URL \url{https://openreview.net/forum?id=CNicRIVIPA}.
+
+\bibitem[Marcus et~al.(1993)Marcus, Santorini, and Marcinkiewicz]{marcus1993building}
+Mitch Marcus, Beatrice Santorini, and Mary~Ann Marcinkiewicz.
+\newblock Building a large annotated corpus of english: The penn treebank.
+\newblock \emph{Computational linguistics}, 19\penalty0 (2):\penalty0 313--330, 1993.
+
+\bibitem[Merity et~al.(2016)Merity, Xiong, Bradbury, and Socher]{merity2016pointer}
+Stephen Merity, Caiming Xiong, James Bradbury, and Richard Socher.
+\newblock Pointer sentinel mixture models, 2016.
+
+\bibitem[Nisonoff et~al.(2024)Nisonoff, Xiong, Allenspach, and Listgarten]{nisonoff2024unlocking}
+Hunter Nisonoff, Junhao Xiong, Stephan Allenspach, and Jennifer Listgarten.
+\newblock Unlocking guidance for discrete state-space diffusion and flow models.
+\newblock \emph{arXiv preprint arXiv:2406.01572}, 2024.
+
+\bibitem[Ou et~al.(2025)Ou, Nie, Xue, Zhu, Sun, Li, and Li]{ou2025your}
+Jingyang Ou, Shen Nie, Kaiwen Xue, Fengqi Zhu, Jiacheng Sun, Zhenguo Li, and Chongxuan Li.
+\newblock Your absorbing discrete diffusion secretly models the conditional distributions of clean data.
+\newblock In \emph{The Thirteenth International Conference on Learning Representations}, 2025.
+\newblock URL \url{https://openreview.net/forum?id=sMyXP8Tanm}.
+
+\bibitem[Paperno et~al.(2016)Paperno, Kruszewski, Lazaridou, Pham, Bernardi, Pezzelle, Baroni, Boleda, and Fernandez]{paperno-EtAl:2016:P16-1}
+Denis Paperno, Germ\'{a}n Kruszewski, Angeliki Lazaridou, Ngoc~Quan Pham, Raffaella Bernardi, Sandro Pezzelle, Marco Baroni, Gemma Boleda, and Raquel Fernandez.
+\newblock The {LAMBADA} dataset: Word prediction requiring a broad discourse context.
+\newblock In \emph{Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\  1525--1534, Berlin, Germany, August 2016. Association for Computational Linguistics.
+\newblock URL \url{http://www.aclweb.org/anthology/P16-1144}.
+
+\bibitem[Peebles \& Xie(2023)Peebles and Xie]{peebles2023scalable}
+William Peebles and Saining Xie.
+\newblock Scalable diffusion models with transformers.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on Computer Vision}, pp.\  4195--4205, 2023.
+
+\bibitem[Radford et~al.(2019)Radford, Wu, Child, Luan, Amodei, Sutskever, et~al.]{radford2019language}
+Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et~al.
+\newblock Language models are unsupervised multitask learners.
+\newblock \emph{OpenAI blog}, 1\penalty0 (8):\penalty0 9, 2019.
+
+\bibitem[Sahoo et~al.(2024{\natexlab{a}})Sahoo, Arriola, Gokaslan, Marroquin, Rush, Schiff, Chiu, and Kuleshov]{sahoo2024simple}
+Subham~Sekhar Sahoo, Marianne Arriola, Aaron Gokaslan, Edgar~Mariano Marroquin, Alexander~M Rush, Yair Schiff, Justin~T Chiu, and Volodymyr Kuleshov.
+\newblock Simple and effective masked diffusion language models.
+\newblock In \emph{The Thirty-eighth Annual Conference on Neural Information Processing Systems}, 2024{\natexlab{a}}.
+\newblock URL \url{https://openreview.net/forum?id=L4uaAR4ArM}.
+
+\bibitem[Sahoo et~al.(2024{\natexlab{b}})Sahoo, Gokaslan, Sa, and Kuleshov]{sahoo2024diffusion}
+Subham~Sekhar Sahoo, Aaron Gokaslan, Christopher~De Sa, and Volodymyr Kuleshov.
+\newblock Diffusion models with learned adaptive noise.
+\newblock In \emph{The Thirty-eighth Annual Conference on Neural Information Processing Systems}, 2024{\natexlab{b}}.
+\newblock URL \url{https://openreview.net/forum?id=loMa99A4p8}.
+
+\bibitem[Sahoo et~al.(2024{\natexlab{c}})Sahoo, Morris, Gokaslan, Biswas, Shmatikov, and Kuleshov]{sahoo2024zeroorder}
+Subham~Sekhar Sahoo, John~Xavier Morris, Aaron Gokaslan, Srijeeta Biswas, Vitaly Shmatikov, and Volodymyr Kuleshov.
+\newblock Zero-order diffusion guidance for inverse problems, 2024{\natexlab{c}}.
+\newblock URL \url{https://openreview.net/forum?id=JBgBrnhLLL}.
+
+\bibitem[Sanchez et~al.(2023)Sanchez, Fan, Spangher, Levi, Ammanamanchi, and Biderman]{sanchez2023stay}
+Guillaume Sanchez, Honglu Fan, Alexander Spangher, Elad Levi, Pawan~Sasanka Ammanamanchi, and Stella Biderman.
+\newblock Stay on topic with classifier-free guidance.
+\newblock \emph{arXiv preprint arXiv:2306.17806}, 2023.
+
+\bibitem[Santilli et~al.(2023)Santilli, Severino, Postolache, Maiorca, Mancusi, Marin, and Rodola]{santilli2023accelerating}
+Andrea Santilli, Silvio Severino, Emilian Postolache, Valentino Maiorca, Michele Mancusi, Riccardo Marin, and Emanuele Rodola.
+\newblock Accelerating transformer inference for translation via parallel decoding.
+\newblock In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki (eds.), \emph{Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\  12336--12355, Toronto, Canada, July 2023. Association for Computational Linguistics.
+\newblock \doi{10.18653/v1/2023.acl-long.689}.
+\newblock URL \url{https://aclanthology.org/2023.acl-long.689}.
+
+\bibitem[Schiff et~al.(2024)Schiff, Sahoo, Phung, Wang, Boshar, Dalla-torre, de~Almeida, Rush, Pierrot, and Kuleshov]{schiff2024discreteguidance}
+Yair Schiff, Subham~Sekhar Sahoo, Hao Phung, Guanghan Wang, Sam Boshar, Hugo Dalla-torre, Bernardo~P de~Almeida, Alexander Rush, Thomas Pierrot, and Volodymyr Kuleshov.
+\newblock Simple guidance mechanisms for discrete diffusion models.
+\newblock \emph{arXiv preprint arXiv:2412.10193}, 2024.
+
+\bibitem[Shi et~al.(2024)Shi, Han, Wang, Doucet, and Titsias]{shi2024simplified}
+Jiaxin Shi, Kehang Han, Zhe Wang, Arnaud Doucet, and Michalis Titsias.
+\newblock Simplified and generalized masked diffusion for discrete data.
+\newblock In \emph{The Thirty-eighth Annual Conference on Neural Information Processing Systems}, 2024.
+\newblock URL \url{https://openreview.net/forum?id=xcqSOfHt4g}.
+
+\bibitem[Si et~al.(2022)Si, Bishop, and Kuleshov]{siautoregressive}
+Phillip Si, Allan Bishop, and Volodymyr Kuleshov.
+\newblock Autoregressive quantile flows for predictive uncertainty estimation.
+\newblock In \emph{International Conference on Learning Representations}, 2022.
+
+\bibitem[Si et~al.(2023)Si, Chen, Sahoo, Schiff, and Kuleshov]{si2023semi}
+Phillip Si, Zeyi Chen, Subham~Sekhar Sahoo, Yair Schiff, and Volodymyr Kuleshov.
+\newblock Semi-autoregressive energy flows: exploring likelihood-free training of normalizing flows.
+\newblock In \emph{International Conference on Machine Learning}, pp.\  31732--31753. PMLR, 2023.
+
+\bibitem[Sohl-Dickstein et~al.(2015)Sohl-Dickstein, Weiss, Maheswaranathan, and Ganguli]{sohl2015deep}
+Jascha Sohl-Dickstein, Eric Weiss, Niru Maheswaranathan, and Surya Ganguli.
+\newblock Deep unsupervised learning using nonequilibrium thermodynamics.
+\newblock In \emph{International conference on machine learning}, pp.\  2256--2265. PMLR, 2015.
+
+\bibitem[Song et~al.(2020)Song, Meng, and Ermon]{song2020denoising}
+Jiaming Song, Chenlin Meng, and Stefano Ermon.
+\newblock Denoising diffusion implicit models.
+\newblock \emph{arXiv preprint arXiv:2010.02502}, 2020.
+
+\bibitem[Song \& Ermon(2019)Song and Ermon]{song2019generative}
+Yang Song and Stefano Ermon.
+\newblock Generative modeling by estimating gradients of the data distribution.
+\newblock \emph{Advances in neural information processing systems}, 32, 2019.
+
+\bibitem[Su et~al.(2021)Su, Lu, Pan, Murtadha, Wen, and Liu]{su2021roformer}
+Jianlin Su, Yu~Lu, Shengfeng Pan, Ahmed Murtadha, Bo~Wen, and Yunfeng Liu.
+\newblock Roformer: Enhanced transformer with rotary position embedding.
+\newblock \emph{arXiv preprint arXiv:2104.09864}, 2021.
+
+\bibitem[Sun et~al.(2022)Sun, Yu, Dai, Schuurmans, and Dai]{sun2022score}
+Haoran Sun, Lijun Yu, Bo~Dai, Dale Schuurmans, and Hanjun Dai.
+\newblock Score-based continuous-time discrete diffusion models.
+\newblock \emph{arXiv preprint arXiv:2211.16750}, 2022.
+
+\bibitem[Tian et~al.(2025)Tian, Jiang, Yuan, Peng, and Wang]{tian2025visual}
+Keyu Tian, Yi~Jiang, Zehuan Yuan, Bingyue Peng, and Liwei Wang.
+\newblock Visual autoregressive modeling: Scalable image generation via next-scale prediction.
+\newblock \emph{Advances in neural information processing systems}, 37:\penalty0 84839--84865, 2025.
+
+\bibitem[Uria et~al.(2014)Uria, Murray, and Larochelle]{uria2014deep}
+Benigno Uria, Iain Murray, and Hugo Larochelle.
+\newblock A deep and tractable density estimator.
+\newblock In \emph{International Conference on Machine Learning}, pp.\  467--475. PMLR, 2014.
+
+\bibitem[Vaswani et~al.(2017)Vaswani, Shazeer, Parmar, Uszkoreit, Jones, Gomez, Kaiser, and Polosukhin]{vaswani2017attention}
+Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan~N Gomez, {\L}ukasz Kaiser, and Illia Polosukhin.
+\newblock Attention is all you need.
+\newblock \emph{Advances in neural information processing systems}, 30, 2017.
+
+\bibitem[Wang et~al.(2023)Wang, Schiff, Gokaslan, Pan, Wang, De~Sa, and Kuleshov]{wang2023infodiff}
+Yingheng Wang, Yair Schiff, Aaron Gokaslan, Weishen Pan, Fei Wang, Christopher De~Sa, and Volodymyr Kuleshov.
+\newblock {I}nfo{D}iffusion: Representation learning using information maximizing diffusion models.
+\newblock In Andreas Krause, Emma Brunskill, Kyunghyun Cho, Barbara Engelhardt, Sivan Sabato, and Jonathan Scarlett (eds.), \emph{Proceedings of the 40th International Conference on Machine Learning}, volume 202 of \emph{Proceedings of Machine Learning Research}, pp.\  36336--36354. PMLR, 23--29 Jul 2023.
+\newblock URL \url{https://proceedings.mlr.press/v202/wang23ah.html}.
+
+\bibitem[Wu et~al.(2023)Wu, Fan, Liu, Zheng, Gong, yelong shen, Jiao, Li, zhongyu wei, Guo, Duan, and Chen]{wu2023ardiffusion}
+Tong Wu, Zhihao Fan, Xiao Liu, Hai-Tao Zheng, Yeyun Gong, yelong shen, Jian Jiao, Juntao Li, zhongyu wei, Jian Guo, Nan Duan, and Weizhu Chen.
+\newblock {AR}-diffusion: Auto-regressive diffusion model for text generation.
+\newblock In \emph{Thirty-seventh Conference on Neural Information Processing Systems}, 2023.
+\newblock URL \url{https://openreview.net/forum?id=0EG6qUQ4xE}.
+
+\bibitem[Ye et~al.(2024)Ye, Gong, Chen, Zheng, Gao, Shi, Wu, Jiang, Li, Bi, et~al.]{ye2024diffusion}
+Jiacheng Ye, Shansan Gong, Liheng Chen, Lin Zheng, Jiahui Gao, Han Shi, Chuan Wu, Xin Jiang, Zhenguo Li, Wei Bi, et~al.
+\newblock Diffusion of thoughts: Chain-of-thought reasoning in diffusion language models.
+\newblock \emph{arXiv preprint arXiv:2402.07754}, 2024.
+
+\bibitem[Zhang et~al.(2015)Zhang, Zhao, and LeCun]{Zhang2015CharacterlevelCN}
+Xiang Zhang, Junbo~Jake Zhao, and Yann LeCun.
+\newblock Character-level convolutional networks for text classification.
+\newblock In \emph{NIPS}, 2015.
+
+\bibitem[Zhao et~al.(2024)Zhao, Ding, and Akoglu]{zhao2024pard}
+Lingxiao Zhao, Xueying Ding, and Leman Akoglu.
+\newblock Pard: Permutation-invariant autoregressive diffusion for graph generation.
+\newblock In \emph{The Thirty-eighth Annual Conference on Neural Information Processing Systems}, 2024.
+\newblock URL \url{https://openreview.net/forum?id=x4Kk4FxLs3}.
+
+\bibitem[Zheng et~al.(2024)Zheng, Chen, Mao, Liu, Zhu, and Zhang]{zheng2024masked}
+Kaiwen Zheng, Yongxin Chen, Hanzi Mao, Ming-Yu Liu, Jun Zhu, and Qinsheng Zhang.
+\newblock Masked diffusion models are secretly time-agnostic masked models and exploit inaccurate categorical sampling.
+\newblock \emph{arXiv preprint arXiv:2409.02908}, 2024.
+
+\end{thebibliography}

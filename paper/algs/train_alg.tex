@@ -1,0 +1,63 @@
+\begin{algorithm}
+\caption{SAR Training}
+\begin{algorithmic}[1]
+\State \textbf{Input:} $p_{data}$, $L$ context length, $L'$ block length, $R$ layers
+\While{not converged}
+    \State $\x^0 \sim p_{data}$
+    \Comment{Prefilling: block-causal masking}
+    
+    \State $h^1 \gets  \text{Linear}(\x^0) + \text{PE}(\x^0)$
+    \Comment{vocab embed}
+    
+    \State $\bar{K}, \bar{V} \gets \emptyset$
+    \Comment{kv cache}
+    
+    \State $M \gets \text{CreateMask}(L, L')$
+    \Comment{block-causal mask}
+    
+    \For{$r = 1$ to $R$}
+        \State $Q^r, K^r, V^r \gets \text{Linear}(h^r)$
+        \State $\bar{K}^{r} \gets K^r$
+        \Comment{update cache}
+        
+        \State $\bar{V}^{r} \gets \bar{V}^{r}$
+        
+        \State $h^{r+1} \gets \text{Attn}(Q^r, K^r, V^r, M)$
+        \State $h^{r+1} \gets \text{Norm}(\text{MLP}(h^{r+1}))$
+    \EndFor
+    
+    \Comment{Denoising: block-level random masking}
+    
+    \For{$i = 1$ to $\frac{L}{L'}$}
+        \State $t \sim \mathcal{U}([0, 1])$
+        
+        \State $\x^t_{(i-1)L':iL'} \gets \text{noise}(\x^0_{(i-1)L':iL'}, t)$
+        
+        \State $h^1 \gets \text{Linear}(\x^t_{(i-1)L':iL'}) + \text{PE}(\x^t)_{(i-1)L':iL'}$
+        \Comment{vocab embed}
+        
+        \For{$r = 1$ to $R$}
+            \State $Q^r, K^r, V^r \gets \text{Linear}(h^r_{(i-1)L':iL'})$
+            \Comment{block-level attention}
+            
+            \State $K^r \gets \bar{K}^r_{0:(i-1)L'} \oplus K^r$
+            \Comment{use kv from prefilling}
+            
+            \State $V^r \gets \bar{V}^r_{0:(i-1)L'} \oplus V^r$
+            
+            \Comment{cross attention}
+            
+            \State $h^{r+1}_{(i-1)L':iL'} \gets \text{Attn}(Q^r_{(i-1)L':iL'}, K^r_{0:iL'}, V^r_{0:iL'})$
+            
+            \State $h^{r+1}_{(i-1)L':iL'} \gets \text{Norm}(\text{MLP}(h^{r+1}_{(i-1)L':iL'}))$
+        \EndFor
+    \EndFor
+    
+    \State $\x^0 \gets \text{Linear}(h^R)$
+    
+    \State Take gradient step on $\nabla \mathbb{E}_{t \sim (0, 1], q} \left[ \frac{\alpha_t'}{1-\alpha_t} \log \langle  \x_\theta(\z_t^b), \x_^b \rangle \right]$
+    \Comment{SAR likelihood}
+    
+\EndWhile
+\end{algorithmic}
+\end{algorithm}

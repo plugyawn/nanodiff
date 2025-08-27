@@ -1,0 +1,131 @@
+# ---- OS / Editor noise ----
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+*.swp
+*.swo
+*.orig
+*.bak
+*.tmp
+*.temp
+*.pid
+*.trace
+*.stackdump
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual envs
+.venv/
+venv/
+env/
+ENV/
+.conda/
+conda-env/
+.python-version
+
+# Packaging / build
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+wheels/
+share/python-wheels/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Testing / coverage / type-check caches
+.pytest_cache/
+.mypy_cache/
+.nox/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+.pytype/
+pytestdebug.log
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+.ipython/
+.jupyter/
+
+# ---- ML training artifacts ----
+checkpoints/
+logs/
+wandb/
+runs/
+outputs/
+lightning_logs/
+tb_logs/
+tensorboard/
+events.out.tfevents.*
+
+# Model weights and large arrays
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.safetensors
+*.onnx
+*.tflite
+*.gguf
+*.ggml
+*.npz
+*.npy
+
+# Datasets and large local data
+data/
+!data/.gitkeep
+!data/README.md
+datasets/
+!datasets/.gitkeep
+!datasets/README.md
+
+# Generated samples and media
+samples/
+media/
+
+# Archives
+*.tar
+*.gz
+*.zip
+*.7z
+*.xz
+*.bz2
+
+# ---- Tooling / IDE ----
+.vscode/
+.idea/
+*.code-workspace
+
+# ---- Secrets / credentials (keep out of git) ----
+.env
+.env.*
+*.secret
+*.pem
+*.key
+*.crt
+*.cert
+*_credentials.*
+
+# ---- Compiled / native artifacts ----
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.dylib
+*.exe
+
+# ---- HPC / cluster logs ----
+slurm-*.out

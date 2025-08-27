@@ -1,0 +1,45 @@
+\begin{algorithm}
+\caption{SAR Inference}
+\begin{algorithmic}[1]
+\State \textbf{Input:} $p_{limit}$, $T$ diffusion steps, $L$ context length, $L'$ block length, $R$ layers
+\State \textbf{Output:} $\tilde{\x}^0$
+
+\State $\tilde{\x}^T \sim p_{limit}$
+\Comment{Initialize noisy sample}
+
+\State $\bar{K}, \bar{V} \gets \emptyset$
+\Comment{kv cache}
+
+\For{$i = 1$ to $\frac{L}{L'}$}
+    \For{$t = T$ to $1$}
+        \State $h^1 \gets \text{Linear}(\x^t_{(i-1)L':iL'}) + \text{PE}(\x^t)_{(i-1)L':iL'}$
+        \Comment{vocab embed}
+        
+        \For{$r = 1$ to $R$}
+            \State $Q^r, K^r, V^r \gets \text{Linear}(h^r_{(i-1)L':iL'})$
+            \Comment{query block $i$}
+            
+            \State $K^r \gets \bar{K}^r_{0:(i-1)L'} \oplus K^r_{(i-1)L':iL'}$
+            \Comment{use kv cache}
+            
+            \State $V^r \gets \bar{V}^r_{0:(i-1)L'} \oplus V^r_{(i-1)L':iL'}$
+            
+            \State $h^r_{(i-1)L':iL'} \gets \text{CrossAttn}(Q^r_{(i-1)L':iL'}, K^r_{0:iL'}, V^r_{0:iL'})$
+            
+            \State $h^r_{(i-1)L':iL'} \gets \text{Norm}(\text{MLP}(h^r_{(i-1)L':iL'}))$
+            
+            \State $h^{r+1} \gets h^{r+1} \oplus h^r_{(i-1)L':iL'}$
+        \EndFor
+        
+        \State $\x^{t-1}_{iL':(i+1)L'} \sim h_R$
+        \Comment{denoised sample}
+    \EndFor
+    
+    \Comment{Update kv cache after sampling block $i$}
+    \State $\bar{K}_{0:iL'} \gets \bar{K}_{0:(i-1)L'} \oplus K_{(i-1)L':iL'}$
+    \State $\bar{V}_{0:iL'} \gets \bar{V}_{0:(i-1)L'} \oplus V_{(i-1)L':iL'}$
+\EndFor
+
+\State \Return $\x^0$
+\end{algorithmic}
+\end{algorithm}

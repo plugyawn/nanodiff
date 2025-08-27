@@ -1,0 +1,56 @@
+
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{amsmath}       % blackboard math symbols
+\usepackage{amssymb}
+\usepackage{nicefrac}
+
+%%% useful macros
+\newcommand{\Fig}[1]{Figure~\ref{#1}}  % beginning of sentence
+\newcommand{\fig}[1]{Fig.~\ref{#1}}    % somewhere
+\newcommand{\figs}[2]{Figures~\ref{#1} and ~\ref{#2}}    
+%\newcommand{\Tab}[1]{Table~\ref{#1}}
+\newcommand{\tab}[1]{Table~\ref{#1}}
+% \newcommand{\Eqn}[1]{Eq.~\ref{#1}}
+\newcommand{\Eqn}[1]{(\ref{#1})}
+\newcommand{\eqn}[1]{eq.~\ref{#1}} % eq. 1.1
+\newcommand{\eqnp}[1]{(Eq.~\ref{#1})} % (equation 1.1)
+\renewcommand{\sec}[1]{Sec.~\ref{#1}} % Section 1
+\newcommand{\supp}[1]{Suppl.~\ref{#1}}
+
+
+\usepackage{xspace}
+% Add a period to the end of an abbreviation unless there's one
+% already, then \xspace.
+\makeatletter
+\DeclareRobustCommand\onedot{\futurelet\@let@token\@onedot}
+\def\@onedot{\ifx\@let@token.\else.\null\fi\xspace}
+\def\eg{e.g\onedot}
+\def\ie{i.e\onedot}
+\def\cf{cf\onedot}
+\def\etc{etc\onedot}
+\def\wrt{w.r.t\onedot}
+\makeatother
+
+\newcommand{\Real}{\ensuremath{\mathbb R}}        % Real numbers
+\newcommand{\Unit}{\ensuremath{\mathbb I}}        % Unit Matrix
+\newcommand{\T}{\ensuremath{\top}}                % Transpose
+\newcommand{\bfI}{\mathbf{I}}
+%\newcommand{\CharOver}[2]{\ensuremath{\overset{_{#1}}{#2}}}
+
+% color-code
+\usepackage{xcolor}
+\definecolor{ourblue}{rgb}{0.368,0.507,0.71}
+\definecolor{ourorange}{rgb}{0.881,0.611,0.142}
+\definecolor{ourgreen}{rgb}{0.56,0.692,0.195}
+\definecolor{ourred}{rgb}{0.923,0.386,0.209}
+\definecolor{ourviolet}{rgb}{0.528,0.471,0.701}
+\definecolor{ourbrown}{rgb}{0.772,0.432,0.102}
+\definecolor{ourlightblue}{rgb}{0.364,0.619,0.782}
+\definecolor{ourdarkgreen}{rgb}{0.572,0.586,0.}
+
+% color-code 2
+\definecolor{ourcyan2}{rgb}{0.125,0.722,0.804}
+\definecolor{ourred2}{rgb}{0.863,0.184,0.047}
+\definecolor{ouryellow2}{cmyk}{0,0.16,1.0,0.07}
+\definecolor{ourviolet2}{cmyk}{0.55,0.56,0,0.47}
+\definecolor{ourorange2}{cmyk}{0,0.46,0.89,0.11}
