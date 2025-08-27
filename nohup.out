@@ -1,0 +1,77 @@
+Starting BD3LM Speedrun Training
+Configuration:
+  - GPUs: 8
+  - Block Size: resume
+  - Run Name: bd3lm-speedrun-bsresume-20250827-144312
+  - Optimizer: adamw
+usage: train_bd3lm.py [-h] [--block_size BLOCK_SIZE] [--batch_size BATCH_SIZE]
+                      [--parameterization {subs,sedd,ar}] [--no_cross_attn]
+                      [--no_flex_attn] [--device DEVICE]
+                      [--train_files TRAIN_FILES] [--no_align_bos]
+                      [--val_files VAL_FILES] [--val_tokens VAL_TOKENS]
+                      [--test] [--optimizer {mixed,muon,adamw}]
+                      [--adamw_lr ADAMW_LR] [--compile-zeropower]
+                      [--run_name RUN_NAME] [--save_interval SAVE_INTERVAL]
+                      [--samples_per_eval SAMPLES_PER_EVAL]
+                      [--sample_length SAMPLE_LENGTH] [--top_p TOP_P]
+                      [--resume_dir RESUME_DIR] [--resume_path RESUME_PATH]
+                      [--wandb] [--project_name PROJECT_NAME]
+train_bd3lm.py: error: argument --block_size: invalid int value: 'resume'
+usage: train_bd3lm.py [-h] [--block_size BLOCK_SIZE] [--batch_size BATCH_SIZE]
+                      [--parameterization {subs,sedd,ar}] [--no_cross_attn]
+                      [--no_flex_attn] [--device DEVICE]
+                      [--train_files TRAIN_FILES] [--no_align_bos]
+                      [--val_files VAL_FILES] [--val_tokens VAL_TOKENS]
+                      [--test] [--optimizer {mixed,muon,adamw}]
+                      [--adamw_lr ADAMW_LR] [--compile-zeropower]
+                      [--run_name RUN_NAME] [--save_interval SAVE_INTERVAL]
+                      [--samples_per_eval SAMPLES_PER_EVAL]
+                      [--sample_length SAMPLE_LENGTH] [--top_p TOP_P]
+                      [--resume_dir RESUME_DIR] [--resume_path RESUME_PATH]
+                      [--wandb] [--project_name PROJECT_NAME]
+train_bd3lm.py: error: argument --block_size: invalid int value: 'resume'
+W0827 14:43:20.470000 2322401 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 2322449 closing signal SIGTERM
+W0827 14:43:20.472000 2322401 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 2322450 closing signal SIGTERM
+W0827 14:43:20.473000 2322401 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 2322451 closing signal SIGTERM
+W0827 14:43:20.475000 2322401 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 2322453 closing signal SIGTERM
+W0827 14:43:20.476000 2322401 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 2322454 closing signal SIGTERM
+W0827 14:43:20.477000 2322401 torch/distributed/elastic/multiprocessing/api.py:900] Sending process 2322455 closing signal SIGTERM
+E0827 14:43:20.794000 2322401 torch/distributed/elastic/multiprocessing/api.py:874] failed (exitcode: 2) local_rank: 0 (pid: 2322448) of binary: /home/ubuntu/gai/slm/diff_llm/.venv/bin/python3
+Traceback (most recent call last):
+  File "/home/ubuntu/gai/slm/diff_llm/.venv/bin/torchrun", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/ubuntu/gai/slm/diff_llm/.venv/lib/python3.12/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/gai/slm/diff_llm/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 892, in main
+    run(args)
+  File "/home/ubuntu/gai/slm/diff_llm/.venv/lib/python3.12/site-packages/torch/distributed/run.py", line 883, in run
+    elastic_launch(
+  File "/home/ubuntu/gai/slm/diff_llm/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 139, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/ubuntu/gai/slm/diff_llm/.venv/lib/python3.12/site-packages/torch/distributed/launcher/api.py", line 270, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+train_bd3lm.py FAILED
+------------------------------------------------------------
+Failures:
+[1]:
+  time      : 2025-08-27_14:43:20
+  host      : mt-dc1-ainode121.mtaidc.local
+  rank      : 4 (local_rank: 4)
+  exitcode  : 2 (pid: 2322452)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2025-08-27_14:43:20
+  host      : mt-dc1-ainode121.mtaidc.local
+  rank      : 0 (local_rank: 0)
+  exitcode  : 2 (pid: 2322448)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================

@@ -28,6 +28,14 @@ from datetime import datetime
 from transformers import AutoTokenizer
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+# Speed-friendly math defaults on Ampere/Hopper
+try:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+    # Prefer TF32/fast paths where applicable
+    torch.set_float32_matmul_precision('high')
+except Exception:
+    pass
 try:
     if torch.cuda.is_available():
         torch.empty(1, device="cuda", requires_grad=True).backward()  # Fix for some systems
@@ -153,7 +161,20 @@ class Muon(torch.optim.Optimizer):
         param_groups = [dict(params=v) for v in grouped.values()]
         super().__init__(param_groups, defaults)
         # Optionally compile Newton–Schulz for first-class performance; off by default to avoid long first-step stalls
-        self._zeropower = torch.compile(zeropower_via_newtonschulz5, mode="reduce-overhead") if compile_zeropower else zeropower_via_newtonschulz5
+        if compile_zeropower:
+            try:
+                _rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+            except Exception:
+                _rank = 0
+            if _rank == 0:
+                print("[compile] Compiling zeropower kernel (Newton–Schulz)...")
+                sys.stdout.flush()
+                _t0 = time.time()
+            self._zeropower = torch.compile(zeropower_via_newtonschulz5, mode="reduce-overhead")
+            if _rank == 0:
+                print(f"[compile] Zeropower compiled in {time.time()-_t0:.1f}s")
+        else:
+            self._zeropower = zeropower_via_newtonschulz5
     
     @torch.no_grad()
     def step(self):
@@ -551,6 +572,8 @@ class BlockDiffusionTrainer:
         self.config = config
         self.device = config.device
         self.mask_token_id = config.mask_token_id
+        # Lazily created decode tokenizer to avoid per-eval reloading cost
+        self._decode_tok = None
         
         # Setup noise schedule (align with official BD3LM)
         self.noise = self._get_noise(config.noise_schedule)
@@ -590,9 +613,13 @@ class BlockDiffusionTrainer:
                 compile_zeropower=config.compile_zeropower,
             )
         elif config.optimizer == "adamw":
-            self.optimizer_adam = torch.optim.AdamW(
-                model.parameters(), lr=config.adamw_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=config.weight_decay
-            )
+            # Prefer fused AdamW when available (CUDA builds) for faster optimizer steps
+            adamw_kwargs = dict(lr=config.adamw_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=config.weight_decay)
+            try:
+                self.optimizer_adam = torch.optim.AdamW(model.parameters(), fused=True, **adamw_kwargs)  # type: ignore[call-arg]
+            except TypeError:
+                # Fallback to non-fused on older PyTorch builds
+                self.optimizer_adam = torch.optim.AdamW(model.parameters(), **adamw_kwargs)
         else:
             raise ValueError(f"Unknown optimizer: {config.optimizer}")
 
@@ -838,11 +865,19 @@ class BlockDiffusionTrainer:
         try:
             self.ckpt_dir.mkdir(parents=True, exist_ok=True)
             module = model.module if isinstance(model, torch.nn.parallel.DistributedDataParallel) else model
+            # If compiled, unwrap to the original module for a clean, portable state_dict
+            base_module = getattr(module, "_orig_mod", module)
             state = {
-                'model_state': module.state_dict(),
+                'model_state': base_module.state_dict(),
                 'config': asdict(self.config),
                 'step': self.step,
-                'timestamp': datetime.utcnow().isoformat()
+                'timestamp': datetime.utcnow().isoformat(),
+                # Optimizer states for seamless resume
+                'optimizer_muon': (self.optimizer_muon.state_dict() if self.optimizer_muon is not None else None),
+                'optimizer_adam': (self.optimizer_adam.state_dict() if self.optimizer_adam is not None else None),
+                # RNG states to minimize loss of training continuity
+                'torch_rng_state': torch.random.get_rng_state(),
+                'cuda_rng_state': (torch.cuda.get_rng_state() if torch.cuda.is_available() else None),
             }
             ckpt_path = self.ckpt_dir / f"ckpt_step{self.step:06d}.pt"
             torch.save(state, ckpt_path)
@@ -853,9 +888,11 @@ class BlockDiffusionTrainer:
     @torch.no_grad()
     def _decode_tokens(self, ids: torch.Tensor) -> List[str]:
         # ids: (B, T)
-        tok = AutoTokenizer.from_pretrained('gpt2')
-        tok.pad_token = tok.eos_token
-        return tok.batch_decode(ids.tolist(), skip_special_tokens=True)
+        if self._decode_tok is None:
+            tok = AutoTokenizer.from_pretrained('gpt2')
+            tok.pad_token = tok.eos_token
+            self._decode_tok = tok
+        return self._decode_tok.batch_decode(ids.tolist(), skip_special_tokens=True)
 
     @torch.no_grad()
     def sample_ar(self, model, length: int, num_samples: int = 1, top_p: float = 0.95) -> List[str]:
@@ -1130,9 +1167,17 @@ def main():
     parser.add_argument('--compile-zeropower', action='store_true', help='Compile Muon Newton–Schulz kernel (first step may be slow)')
     parser.add_argument('--run_name', type=str, default=None, help='Run name for logs/checkpoints')
     parser.add_argument('--save_interval', type=int, default=None, help='Override save interval steps')
+    parser.add_argument('--eval_interval', type=int, default=None, help='Override eval interval steps')
     parser.add_argument('--samples_per_eval', type=int, default=None, help='How many samples to generate at eval time')
     parser.add_argument('--sample_length', type=int, default=None, help='Sample length for generation')
     parser.add_argument('--top_p', type=float, default=None, help='Nucleus sampling top-p')
+    parser.add_argument('--compile', action='store_true', help='torch.compile the model forward pass')
+    parser.add_argument('--ddp_fp16_compress', action='store_true', help='Compress gradients to FP16 during DDP all-reduce')
+    parser.add_argument('--max_steps', type=int, default=None, help='Override total training steps')
+    parser.add_argument('--train_tokens', type=int, default=None, help='Target total training tokens; derives max_steps = ceil(train_tokens / (global_batch * seq_len))')
+    # Resume
+    parser.add_argument('--resume_dir', type=str, default=None, help='Resume from latest ckpt in this directory')
+    parser.add_argument('--resume_path', type=str, default=None, help='Resume from this exact ckpt path')
     # WandB
     parser.add_argument('--wandb', action='store_true', help='Enable Weights & Biases logging')
     parser.add_argument('--project_name', type=str, default=None, help='W&B project name (defaults to config.project_name)')
@@ -1148,6 +1193,8 @@ def main():
         config.adamw_lr = args.adamw_lr
     if args.compile_zeropower:
         config.compile_zeropower = True
+    if args.compile:
+        config.compile_model = True
     if args.train_files is not None:
         config.train_files = args.train_files
     if args.no_align_bos:
@@ -1168,6 +1215,8 @@ def main():
         config.run_name = args.run_name
     if args.save_interval is not None:
         config.save_interval = args.save_interval
+    if args.eval_interval is not None:
+        config.eval_interval = args.eval_interval
     if args.samples_per_eval is not None:
         config.samples_per_eval = args.samples_per_eval
     if args.sample_length is not None:
@@ -1186,6 +1235,24 @@ def main():
         if env_proj:
             config.project_name = env_proj
     
+    # Resolve resume checkpoint path if requested (rank will be set next)
+    resume_ckpt_path = None
+    if args.resume_path:
+        from pathlib import Path as _Path
+        p = _Path(args.resume_path)
+        if not p.exists():
+            raise FileNotFoundError(f"--resume_path not found: {p}")
+        resume_ckpt_path = p
+    elif args.resume_dir:
+        from pathlib import Path as _Path
+        d = _Path(args.resume_dir)
+        if not d.exists():
+            raise FileNotFoundError(f"--resume_dir not found: {d}")
+        cand = sorted(d.glob('ckpt_step*.pt'))
+        if not cand:
+            raise FileNotFoundError(f"No ckpt_step*.pt under --resume_dir: {d}")
+        resume_ckpt_path = cand[-1]
+
     # Setup distributed
     if torch.cuda.device_count() > 1 and not args.test and (config.device.startswith('cuda')):
         dist.init_process_group(backend="nccl")
@@ -1209,25 +1276,109 @@ def main():
         # batch_size is global; show both for clarity
         local_bs = config.batch_size // max(1, world_size)
         print(f"Global batch: {config.batch_size} (local {local_bs} x {world_size})")
+        print(f"Max steps: {config.max_steps}  |  Tokens/step: {config.batch_size * config.max_seq_len}")
         print(f"Optimizer: {config.optimizer}")
     
+    # Create model (and optionally override config from checkpoint when resuming)
+    ckpt_state = None
+    if resume_ckpt_path is not None:
+        # Load saved config to guarantee architectural match
+        import torch as _torch
+        ckpt_state = _torch.load(resume_ckpt_path, map_location='cpu')
+        if 'config' not in ckpt_state:
+            raise KeyError(f"Checkpoint missing 'config': {resume_ckpt_path}")
+        saved_cfg = ckpt_state['config']
+        # Keep runtime device, wandb toggles, and optional run_name override
+        cli_cfg = config  # preserve CLI/runtime choices made above
+        keep_device = cli_cfg.device
+        keep_use_wandb = cli_cfg.use_wandb
+        keep_project = cli_cfg.project_name
+        keep_run_name = (args.run_name if args.run_name is not None else saved_cfg.get('run_name'))
+        config = Config(**saved_cfg)
+        # Restore selected runtime overrides (safe to change across resume)
+        config.device = keep_device
+        config.use_wandb = keep_use_wandb
+        if keep_project is not None:
+            config.project_name = keep_project
+        if keep_run_name is not None:
+            config.run_name = keep_run_name
+        # Apply additional runtime overrides from CLI/runtime config
+        for key in [
+            'batch_size', 'eval_interval', 'save_interval', 'samples_per_eval', 'sample_length', 'top_p',
+            'optimizer', 'adamw_lr', 'learning_rate', 'weight_decay', 'momentum',
+            'compile_model', 'compile_zeropower', 'train_files', 'val_files', 'val_tokens', 'align_to_bos'
+        ]:
+            if hasattr(cli_cfg, key):
+                setattr(config, key, getattr(cli_cfg, key))
+
+    # Allow overriding training length post resume merge
+    if args.max_steps is not None:
+        config.max_steps = int(args.max_steps)
+    elif args.train_tokens is not None:
+        # Derive steps from target token budget and final (possibly resumed) batch size
+        tokens_per_step = int(config.batch_size) * int(config.max_seq_len)
+        # Guard against zero or negative
+        tokens_per_step = max(1, tokens_per_step)
+        config.max_steps = max(1, math.ceil(int(args.train_tokens) / tokens_per_step))
+
     # Create model
     # Force block_size=1 for AR
     if config.parameterization == 'ar':
         config.block_size = 1
         config.cross_attn = False
+    # Create base model first (uncompiled) so we can load checkpoints reliably
     model = BlockDiffusionLM(config).to(config.device)
+    
+    # If resuming, load model weights BEFORE compilation/DDP wrapping to avoid OptimizedModule key prefixes
+    if resume_ckpt_path is not None:
+        load_state = ckpt_state['model_state']
+        # Accept checkpoints saved from a compiled model (keys prefixed with _orig_mod.)
+        if any(k.startswith('_orig_mod.') for k in load_state.keys()):
+            load_state = { (k[10:] if k.startswith('_orig_mod.') else k): v for k, v in load_state.items() }
+        try:
+            msg = model.load_state_dict(load_state, strict=True)
+        except RuntimeError as e:
+            # Fallback: attempt non-strict to surface partial mismatches without failing
+            if rank == 0:
+                print(f"[warn] strict load failed ({e}); retrying non-strict load")
+            msg = model.load_state_dict(load_state, strict=False)
+        # carry step forward
+        trainer_step_from_ckpt = int(ckpt_state.get('step', 0))
+    else:
+        trainer_step_from_ckpt = 0
+
+    # Optional compilation happens after successful load
     if config.compile_model and not args.test:
         try:
+            if rank == 0:
+                print("[compile] Compiling model with torch.compile... this can take a while")
+                sys.stdout.flush()
+                _t0 = time.time()
             model = torch.compile(model)
+            if rank == 0:
+                print(f"[compile] Done in {time.time()-_t0:.1f}s")
         except Exception as e:
             if rank == 0:
                 print(f"torch.compile failed: {e}")
-    
+
     if world_size > 1 and not args.test:
+        # Broadcast buffers rarely needed here; disabling saves time. Enable gradient view for fewer copies.
         model = torch.nn.parallel.DistributedDataParallel(
-            model, device_ids=[rank], find_unused_parameters=False, static_graph=True
+            model,
+            device_ids=[rank],
+            find_unused_parameters=False,
+            static_graph=True,
+            broadcast_buffers=False,
+            gradient_as_bucket_view=True,
         )
+        # Optional FP16 gradient compression hook to reduce all-reduce bandwidth
+        if args.ddp_fp16_compress:
+            try:
+                from torch.distributed.algorithms.ddp_comm_hooks.default_hooks import fp16_compress_hook
+                model.register_comm_hook(state=None, hook=fp16_compress_hook)
+            except Exception as e:
+                if rank == 0:
+                    print(f"[warn] Failed to enable DDP FP16 compression hook: {e}")
     
     # Init W&B only on rank 0
     if rank == 0 and config.use_wandb:
@@ -1238,7 +1389,35 @@ def main():
         )
 
     trainer = BlockDiffusionTrainer(model, config)
-    
+    # If resuming, set trainer step and optionally load optimizer state
+    if resume_ckpt_path is not None:
+        # carry step forward
+        trainer.step = trainer_step_from_ckpt
+        # Optimizer states (optional)
+        try:
+            opt_mu = ckpt_state.get('optimizer_muon')
+            if opt_mu is not None and trainer.optimizer_muon is not None:
+                trainer.optimizer_muon.load_state_dict(opt_mu)
+        except Exception as e:
+            if rank == 0:
+                print(f"[warn] Could not load Muon optimizer state: {e}")
+        try:
+            opt_adam = ckpt_state.get('optimizer_adam')
+            if opt_adam is not None and trainer.optimizer_adam is not None:
+                trainer.optimizer_adam.load_state_dict(opt_adam)
+        except Exception as e:
+            if rank == 0:
+                print(f"[warn] Could not load AdamW optimizer state: {e}")
+        # RNG states to maintain continuity best-effort
+        try:
+            if 'torch_rng_state' in ckpt_state:
+                torch.random.set_rng_state(ckpt_state['torch_rng_state'])
+            if 'cuda_rng_state' in ckpt_state and ckpt_state['cuda_rng_state'] is not None and torch.cuda.is_available():
+                torch.cuda.set_rng_state(ckpt_state['cuda_rng_state'])
+        except Exception as e:
+            if rank == 0:
+                print(f"[warn] Could not restore RNG states: {e}")
+
     if rank == 0:
         params = sum(p.numel() for p in model.parameters())
         print(f"Parameters: {params/1e6:.1f}M")
@@ -1257,7 +1436,14 @@ def main():
         # Full training: use NanoGPT cached FineWeb data
         # Prepare output dirs on rank 0
         samples_dir = Path(__file__).parent / 'samples'
-        ckpt_dir = Path(__file__).parent / 'checkpoints' / (config.run_name or f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
+        if resume_ckpt_path is not None:
+            # Continue writing into the same checkpoint directory as the loaded CKPT
+            ckpt_dir = resume_ckpt_path.parent
+            # If no run_name provided, align it to directory name for logging
+            if config.run_name is None:
+                config.run_name = ckpt_dir.name
+        else:
+            ckpt_dir = Path(__file__).parent / 'checkpoints' / (config.run_name or f"run-{datetime.now().strftime('%Y%m%d-%H%M%S')}")
         if rank == 0:
             samples_dir.mkdir(parents=True, exist_ok=True)
             ckpt_dir.mkdir(parents=True, exist_ok=True)
@@ -1313,7 +1499,7 @@ def main():
                 running_loss = 0
                 log_time = time.time()
 
-            if trainer.step % config.eval_interval == 0:
+            if (config.eval_interval > 0) and (config.val_tokens > 0) and (trainer.step % config.eval_interval == 0):
                 val_loss = evaluate_val_loss(trainer, config, val_sampler, rank, world_size)
                 if rank == 0:
                     print(f"Eval step {trainer.step}: val_loss_subs = {val_loss:.4f}")
@@ -1322,8 +1508,9 @@ def main():
                             "val_loss_subs": val_loss,
                             "step": trainer.step
                         })
-                    # Generate and write sample rollouts
-                    trainer.generate_and_save_samples(model, out_dir=samples_dir, rank=rank)
+                    # Generate and write sample rollouts (optional)
+                    if config.samples_per_eval and config.samples_per_eval > 0:
+                        trainer.generate_and_save_samples(model, out_dir=samples_dir, rank=rank)
                 # Save periodic checkpoints
                 if trainer.step % config.save_interval == 0:
                     trainer.save_checkpoint(model, rank=rank)

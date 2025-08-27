@@ -3,13 +3,16 @@
 # Optimized for 8xH200 GPUs (single node)
 
 # Set environment variables for optimal performance
-export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-1}
+# Allow multiple CUDA connections to improve kernel overlap on Hopper
+export CUDA_DEVICE_MAX_CONNECTIONS=${CUDA_DEVICE_MAX_CONNECTIONS:-8}
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-8}
 export PYTORCH_CUDA_ALLOC_CONF=${PYTORCH_CUDA_ALLOC_CONF:-"expandable_segments:True"}
+export PYTORCH_TF32=${PYTORCH_TF32:-1}
 
 # NCCL optimizations for H200
 export NCCL_DEBUG=${NCCL_DEBUG:-WARN}
-export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-0}
+# Prefer NVLink on single node; disable IB by default (override if multi-node)
+export NCCL_IB_DISABLE=${NCCL_IB_DISABLE:-1}
 export NCCL_IB_GID_INDEX=${NCCL_IB_GID_INDEX:-3}
 if [ -z "${NCCL_SOCKET_IFNAME}" ]; then
   # try to pick a reasonable default interface (override by exporting)
@@ -18,6 +21,7 @@ if [ -z "${NCCL_SOCKET_IFNAME}" ]; then
 fi
 export NCCL_P2P_DISABLE=${NCCL_P2P_DISABLE:-0}
 export NCCL_TREE_THRESHOLD=${NCCL_TREE_THRESHOLD:-0}
+export NCCL_P2P_LEVEL=${NCCL_P2P_LEVEL:-NVL}
 
 # PyTorch optimizations
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=${TORCH_NCCL_ASYNC_ERROR_HANDLING:-1}
@@ -26,15 +30,69 @@ export TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST:-"9.0"}  # H200 architecture
 
 # Training configuration
 NUM_GPUS=${NUM_GPUS:-8}
-BLOCK_SIZE=${1:-16}  # Default block size 16
-GLOBAL_BATCH=${GLOBAL_BATCH:-64}
+# Positional args: [BLOCK_SIZE] [resume|path]
+BLOCK_SIZE_DEFAULT=16
+BLOCK_SIZE=${BLOCK_SIZE:-$BLOCK_SIZE_DEFAULT}
+RESUME_ARG=""
+if [[ -n "${1:-}" ]]; then
+  if [[ "$1" =~ ^[0-9]+$ ]]; then
+    BLOCK_SIZE=$1
+    RESUME_ARG=${2:-}
+  else
+    RESUME_ARG=$1
+  fi
+fi
+GLOBAL_BATCH=${GLOBAL_BATCH:-1024}
 TRAIN_FILES=${TRAIN_FILES:-"./data/fineweb_train_*.bin"}
-VAL_FILES=${VAL_FILES:-"./data/fineweb_train_*.bin"}
+VAL_FILES=${VAL_FILES:-"./data/fineweb_val_*.bin"}
 VAL_TOKENS=${VAL_TOKENS:-10485760}
+MAX_STEPS=${MAX_STEPS:-}
+TRAIN_TOKENS=${TRAIN_TOKENS:-}
 OPTIMIZER=${OPTIMIZER:-mixed}  # mixed | muon | adamw
 # Optional AdamW LR override when using adamw or mixed
 ADAMW_LR=${ADAMW_LR:-}
+EVAL_INTERVAL=${EVAL_INTERVAL:-2000}
+SAMPLES_PER_EVAL=${SAMPLES_PER_EVAL:-0}
+COMPILE=${COMPILE:-1}
+DDP_FP16_COMPRESS=${DDP_FP16_COMPRESS:-1}
 RUN_NAME="bd3lm-speedrun-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S)"
+RESUME_DIR=""
+RESUME_PATH=""
+
+# If a resume flag/arg is provided, try to reuse the latest checkpoints dir
+if [ -n "$RESUME_ARG" ]; then
+  case "$RESUME_ARG" in
+    latest|--resume|resume)
+      # pick latest directory for this block size; fallback to any
+      LATEST_DIR=$(ls -1d checkpoints/bd3lm-speedrun-bs${BLOCK_SIZE}-* 2>/dev/null | sort | tail -n1)
+      if [ -z "$LATEST_DIR" ]; then
+        LATEST_DIR=$(ls -1d checkpoints/* 2>/dev/null | sort | tail -n1)
+      fi
+      if [ -z "$LATEST_DIR" ]; then
+        echo "No checkpoint directories found under checkpoints/. Cannot resume." >&2
+        exit 1
+      fi
+      RUN_NAME=$(basename "$LATEST_DIR")
+      RESUME_DIR="$LATEST_DIR"
+      ;;
+    *)
+      # interpret as a run name, directory, or exact ckpt path
+      if [ -d "checkpoints/${RESUME_ARG}" ]; then
+        RUN_NAME="${RESUME_ARG}"
+        RESUME_DIR="checkpoints/${RESUME_ARG}"
+      elif [ -d "${RESUME_ARG}" ]; then
+        RUN_NAME=$(basename "${RESUME_ARG}")
+        RESUME_DIR="${RESUME_ARG}"
+      elif [ -f "${RESUME_ARG}" ]; then
+        RESUME_PATH="${RESUME_ARG}"
+        RUN_NAME=$(basename "$(dirname "${RESUME_ARG}")")
+      else
+        echo "Resume target not found: ${RESUME_ARG}" >&2
+        exit 1
+      fi
+      ;;
+  esac
+fi
 
 # Weights & Biases
 ENABLE_WANDB=${ENABLE_WANDB:-1}
@@ -48,9 +106,11 @@ echo "Configuration:"
 echo "  - GPUs: ${NUM_GPUS}"
 echo "  - Block Size: ${BLOCK_SIZE}"
 echo "  - Run Name: ${RUN_NAME}"
+if [ -n "$RESUME_DIR" ]; then echo "  - Resuming from dir: ${RESUME_DIR}"; fi
+if [ -n "$RESUME_PATH" ]; then echo "  - Resuming from ckpt: ${RESUME_PATH}"; fi
 echo "  - Optimizer: ${OPTIMIZER}"
 
-# Create output directory
+# Create output directory (ensure existing for resume)
 mkdir -p checkpoints/${RUN_NAME}
 mkdir -p logs/${RUN_NAME}
 
@@ -66,6 +126,14 @@ torchrun \
     --val_files "${VAL_FILES}" \
     --val_tokens ${VAL_TOKENS} \
     --optimizer ${OPTIMIZER} \
+    $(if [ -n "${MAX_STEPS}" ]; then echo --max_steps ${MAX_STEPS}; fi) \
+    $(if [ -n "${TRAIN_TOKENS}" ]; then echo --train_tokens ${TRAIN_TOKENS}; fi) \
+    $(if [ -n "${RESUME_DIR}" ]; then echo --resume_dir "${RESUME_DIR}"; fi) \
+    $(if [ -n "${RESUME_PATH}" ]; then echo --resume_path "${RESUME_PATH}"; fi) \
+    $(if [ -n "${EVAL_INTERVAL}" ]; then echo --eval_interval ${EVAL_INTERVAL}; fi) \
+    $(if [ -n "${SAMPLES_PER_EVAL}" ]; then echo --samples_per_eval ${SAMPLES_PER_EVAL}; fi) \
+    $(if [ -n "${COMPILE}" ]; then echo --compile; fi) \
+    $(if [ "${DDP_FP16_COMPRESS}" = "1" ]; then echo --ddp_fp16_compress; fi) \
     $(if [ "${ENABLE_WANDB}" = "1" ]; then echo --wandb --project_name "${WANDB_PROJECT}"; fi) \
     $(if [ -n "${ADAMW_LR}" ]; then echo --adamw_lr ${ADAMW_LR}; fi) \
-    2>&1 | tee logs/${RUN_NAME}/train.log
+    2>&1 | tee $(if [ -n "${RESUME_DIR}${RESUME_PATH}" ]; then echo -a; fi) logs/${RUN_NAME}/train.log
