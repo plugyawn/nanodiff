@@ -78,19 +78,16 @@ def main():
     cfg, model, state = load_model_from_ckpt(ckpt_path, device=args.device)
 
     # Build a small val sampler and compute val loss in the same objective as training
-    try:
-        sampler = build_sampler(
-            filename_pattern=cfg.val_files,
-            batch_size=cfg.batch_size,
-            seq_len=cfg.max_seq_len,
-            device=torch.device(cfg.device),
-            align_to_bos=cfg.align_to_bos,
-        )
-        trainer = BlockDiffusionTrainer(model, cfg)
-        val_loss = evaluate_val_loss(trainer, cfg, sampler, rank=0, world_size=1)
-        print(f"Validation loss ({cfg.parameterization}): {val_loss:.6f}")
-    except Exception as e:
-        print(f"[warn] Validation failed: {e}")
+    sampler = build_sampler(
+        filename_pattern=cfg.val_files,
+        batch_size=cfg.batch_size,
+        seq_len=cfg.max_seq_len,
+        device=torch.device(cfg.device),
+        align_to_bos=cfg.align_to_bos,
+    )
+    trainer = BlockDiffusionTrainer(model, cfg)
+    val_loss = evaluate_val_loss(trainer, cfg, sampler, rank=0, world_size=1)
+    print(f"Validation loss ({cfg.parameterization}): {val_loss:.6f}")
 
     # Sample a few texts
     trainer = BlockDiffusionTrainer(model, cfg)

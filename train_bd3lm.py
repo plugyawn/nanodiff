@@ -24,12 +24,8 @@ from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
 
-# Optional decoding
-try:
-    from transformers import AutoTokenizer
-    _HAS_TRANSFORMERS = True
-except Exception:
-    _HAS_TRANSFORMERS = False
+# Decoding requires transformers
+from transformers import AutoTokenizer
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 try:
@@ -762,16 +758,20 @@ class BlockDiffusionTrainer:
         if self.config.cross_attn:
             x_input = torch.cat([xt, x], dim=1)
             logits = self.model(x_input, sigma, use_bd3lm_mask=True)
-            # only last block (x0) logits are used to decode masked positions
-            logits = logits[:, -T:]
+            # decode from xt queries (first T positions), per paper
+            logits = logits[:, :T]
         else:
             logits = self.model(xt, sigma)
 
         if self.config.parameterization == 'subs':
             log_probs = self._subs_parameterization(logits, xt)
             log_p_theta = torch.gather(log_probs, dim=-1, index=x.unsqueeze(-1)).squeeze(-1)
-            loss_mat = loss_scale * log_p_theta
-            loss = loss_mat.sum() / (B * T)
+            masked = (xt == self.mask_token_id)
+            # ensure there is at least one masked token per batch
+            num_masked = int(masked.sum().item())
+            assert num_masked > 0, "No masked tokens in batch; adjust noise schedule"
+            loss_mat = loss_scale * log_p_theta * masked.float()
+            loss = loss_mat.sum() / num_masked
             return loss
         elif self.config.parameterization == 'sedd':
             # compute dsigma as in reference
@@ -853,15 +853,9 @@ class BlockDiffusionTrainer:
     @torch.no_grad()
     def _decode_tokens(self, ids: torch.Tensor) -> List[str]:
         # ids: (B, T)
-        if _HAS_TRANSFORMERS:
-            try:
-                tok = AutoTokenizer.from_pretrained('gpt2')
-                tok.pad_token = tok.eos_token
-                return tok.batch_decode(ids.tolist(), skip_special_tokens=False)
-            except Exception:
-                pass
-        # fallback: naive space-separated ids
-        return [' '.join(map(str, row)) for row in ids.tolist()]
+        tok = AutoTokenizer.from_pretrained('gpt2')
+        tok.pad_token = tok.eos_token
+        return tok.batch_decode(ids.tolist(), skip_special_tokens=True)
 
     @torch.no_grad()
     def sample_ar(self, model, length: int, num_samples: int = 1, top_p: float = 0.95) -> List[str]:
@@ -876,11 +870,13 @@ class BlockDiffusionTrainer:
             next_logits = logits[:, -1]  # (B, V)
             # nucleus sampling
             probs = next_logits.float().softmax(dim=-1)
-            # never sample the MASK token
             mask_id = self.mask_token_id
-            if mask_id is not None and mask_id < probs.size(-1):
-                probs[:, mask_id] = 0.0
-                probs = probs / torch.clamp_min(probs.sum(dim=-1, keepdim=True), 1e-8)
+            # disallow MASK and ids beyond GPT-2 vocab for decoding
+            probs[:, mask_id] = 0.0
+            decode_limit = 50257  # GPT-2 vocab size
+            if probs.size(-1) > decode_limit:
+                probs[:, decode_limit:] = 0.0
+            probs = probs / probs.sum(dim=-1, keepdim=True)
             if top_p < 1.0:
                 sorted_probs, sorted_idx = torch.sort(probs, descending=True)
                 cdf = torch.cumsum(sorted_probs, dim=-1)
@@ -888,7 +884,7 @@ class BlockDiffusionTrainer:
                 # ensure at least one token
                 mask[..., 0] = True
                 probs = torch.where(mask, sorted_probs, torch.zeros_like(sorted_probs))
-                probs = probs / torch.clamp_min(probs.sum(dim=-1, keepdim=True), 1e-8)
+                probs = probs / probs.sum(dim=-1, keepdim=True)
                 idx = torch.multinomial(probs, num_samples=1)
                 next_ids = sorted_idx.gather(-1, idx)
             else:
@@ -898,9 +894,9 @@ class BlockDiffusionTrainer:
 
     @torch.no_grad()
     def sample_bd3lm_blockwise(self, model, length: int, num_samples: int = 1, top_p: float = 0.95) -> List[str]:
-        """Blockwise sampler approximating BD3LM first-hitting per block.
-        Fills exactly one masked token per block step using xt||x0 and the
-        BD3LM attention mask. Disallows sampling the MASK token.
+        """Blockwise sampler with annealed per-block schedule, decoding xt.
+        Uses first-hitting style: commit one token per step within a block,
+        with t annealed from high to low noise; disallows MASK and ids >= GPT-2 vocab.
         """
         device = self.device
         model.eval()
@@ -914,28 +910,35 @@ class BlockDiffusionTrainer:
         x0[:, 0] = bos_id
         # current noisy xt matches current guess
         xt = x0.clone()
-        # constant moderate noise level (move chance ~ 0.5)
-        p = torch.full((B, 1), 0.5, device=device)
-        sigma = self._sigma_from_p(p, getattr(self.noise, 'sigma_max', None))
         num_blocks = math.ceil(T / bs)
+        # annealed schedule per block: L' steps from p_max to p_min
+        p_max = 0.95
+        p_min = 0.05
+        schedule = torch.linspace(p_max, p_min, steps=bs, device=device)
+        decode_limit = 50257
         for b in range(num_blocks):
             start = b * bs
             end = min(T, start + bs)
+            step_idx = 0
             # iteratively fill this block one token at a time
             while True:
                 masked = (x0[:, start:end] == mask_id)
                 if not masked.any():
                     break
+                # noise level for this step
+                p = schedule[min(step_idx, schedule.numel() - 1)].expand(B, 1)
+                sigma = self._sigma_from_p(p, getattr(self.noise, 'sigma_max', None))
                 # build input as xt||x0 as in training when cross_attn
                 x_in = torch.cat([xt, x0], dim=1)
                 logits = model(x_in, sigma, use_bd3lm_mask=True)
-                logits = logits[:, -T:]  # only decode x0 part
+                logits = logits[:, :T]  # decode xt half
                 block_logits = logits[:, start:end]
                 probs = block_logits.float().softmax(dim=-1)
-                # never sample the MASK token
-                if mask_id is not None and mask_id < probs.size(-1):
-                    probs[..., mask_id] = 0.0
-                    probs = probs / torch.clamp_min(probs.sum(dim=-1, keepdim=True), 1e-8)
+                # Disallow MASK and ids beyond GPT-2 vocab
+                probs[..., mask_id] = 0.0
+                if probs.size(-1) > decode_limit:
+                    probs[..., decode_limit:] = 0.0
+                probs = probs / probs.sum(dim=-1, keepdim=True)
                 # nucleus within the current block
                 if top_p < 1.0:
                     sorted_probs, sorted_idx = torch.sort(probs, descending=True)
@@ -943,19 +946,21 @@ class BlockDiffusionTrainer:
                     nmask = cdf <= top_p
                     nmask[..., 0] = True
                     filt = torch.where(nmask, sorted_probs, torch.zeros_like(sorted_probs))
-                    filt = filt / torch.clamp_min(filt.sum(dim=-1, keepdim=True), 1e-8)
-                    idx = torch.multinomial(filt.view(-1, filt.size(-1)), num_samples=1).view(B, end-start, 1)
+                    filt = filt / filt.sum(dim=-1, keepdim=True)
+                    # sample proposals for all positions
+                    idx = torch.multinomial(filt.view(-1, filt.size(-1)), num_samples=1).view(B, end - start, 1)
                     sampled = sorted_idx.gather(-1, idx).squeeze(-1)
                 else:
                     sampled = torch.argmax(probs, dim=-1)
-                # choose one masked position per batch uniformly to commit
-                masked_f = masked.float()
-                # torch.multinomial expects probs to sum>0; ensure at least one masked per row here
-                pos_idx = torch.multinomial(masked_f + (1e-8 * (1 - masked_f)), num_samples=1).squeeze(-1)
+                # choose one masked position per batch by confidence (max prob)
+                maxp, argmax_tok = probs.max(dim=-1)
+                masked_scores = maxp.masked_fill(~masked, -1.0)
+                pos_idx = masked_scores.argmax(dim=-1)
                 # gather sampled token for that position and update
                 arange_b = torch.arange(B, device=device)
                 x0[arange_b, start + pos_idx] = sampled[arange_b, pos_idx]
                 xt[arange_b, start + pos_idx] = x0[arange_b, start + pos_idx]
+                step_idx += 1
         return self._decode_tokens(x0)
 
     @torch.no_grad()
@@ -1259,39 +1264,28 @@ def main():
         trainer.ckpt_dir = ckpt_dir
         if rank == 0:
             print(f"Using data: {config.train_files}")
-        try:
-            train_sampler = build_sampler(
-                filename_pattern=config.train_files,
-                batch_size=config.batch_size,
-                seq_len=config.max_seq_len,
-                device=torch.device(config.device),
-                align_to_bos=config.align_to_bos,
-            )
-            val_sampler = build_sampler(
-                filename_pattern=config.val_files,
-                batch_size=config.batch_size,
-                seq_len=config.max_seq_len,
-                device=torch.device(config.device),
-                align_to_bos=True,
-            )
-            data_ok = True
-        except Exception as e:
-            if rank == 0:
-                print(f"Data pipeline error: {e}. Falling back to random data.")
-            data_ok = False
+        train_sampler = build_sampler(
+            filename_pattern=config.train_files,
+            batch_size=config.batch_size,
+            seq_len=config.max_seq_len,
+            device=torch.device(config.device),
+            align_to_bos=config.align_to_bos,
+        )
+        val_sampler = build_sampler(
+            filename_pattern=config.val_files,
+            batch_size=config.batch_size,
+            seq_len=config.max_seq_len,
+            device=torch.device(config.device),
+            align_to_bos=True,
+        )
         running_loss = 0
         log_time = time.time()
         
         # Rank-0 progress bar across training steps
         train_pbar = tqdm(total=config.max_steps, initial=trainer.step, desc="Train", disable=(rank != 0))
         while trainer.step < config.max_steps:
-            if data_ok:
-                # Use local shard per rank; DDP handles gradient sync automatically.
-                batch = train_sampler.next_batch()
-            else:
-                # Fallback: generate synthetic local batch on each rank
-                local_bs = config.batch_size // max(1, world_size)
-                batch = torch.randint(0, config.vocab_size, (local_bs, config.max_seq_len), device=config.device)
+            # Use local shard per rank; DDP handles gradient sync automatically.
+            batch = train_sampler.next_batch()
             loss = trainer.train_step(batch)
             running_loss += loss
             if rank == 0:
@@ -1319,7 +1313,7 @@ def main():
                 running_loss = 0
                 log_time = time.time()
 
-            if data_ok and (trainer.step % config.eval_interval == 0):
+            if trainer.step % config.eval_interval == 0:
                 val_loss = evaluate_val_loss(trainer, config, val_sampler, rank, world_size)
                 if rank == 0:
                     print(f"Eval step {trainer.step}: val_loss_subs = {val_loss:.4f}")
