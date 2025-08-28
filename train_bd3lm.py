@@ -851,6 +851,7 @@ class BlockDiffusionTrainer:
         # Surrogate CE (no extra forward): during early warmup, force a
         # fraction of the batch to p≈1 (fully masked xt), which makes SUBS
         # behave like CE for those examples. This keeps a single compiled pass.
+        _sur_idx = None
         if getattr(self.config, 'surrogate_ce_enable', False):
             warm_frac = float(getattr(self.config, 'surrogate_ce_warmup_frac', 0.0) or 0.0)
             frac = float(getattr(self.config, 'surrogate_ce_frac', 0.0) or 0.0)
@@ -859,15 +860,15 @@ class BlockDiffusionTrainer:
                 if step_frac < warm_frac and B >= 2 and frac > 0.0:
                     k = max(1, int(round(B * frac)))
                     k = min(k, B-1)  # keep at least one regular example
-                    idx = torch.randperm(B, device=device)[:k]
+                    _sur_idx = torch.randperm(B, device=device)[:k]
                     # Force p=1 on these rows
-                    move_chance[idx, :] = 1.0
+                    move_chance[_sur_idx, :] = 1.0
                     # Recompute loss_scale on t=1 for those rows using the schedule
-                    ones = torch.ones_like(t[idx, :])
+                    ones = torch.ones_like(t[_sur_idx, :])
                     ls_one, _p_one = self.noise(ones)
                     # Guard shapes and dtype
-                    assert ls_one.shape == t[idx, :].shape
-                    loss_scale[idx, :] = ls_one.to(loss_scale.dtype)
+                    assert ls_one.shape == t[_sur_idx, :].shape
+                    loss_scale[_sur_idx, :] = ls_one.to(loss_scale.dtype)
         # compute sigma per-token for conditioning, and per-example for loss scale terms
         sigma_tok = self._sigma_from_p(move_chance, getattr(self.noise, 'sigma_max', None))  # (B,T)
         sigma = self._sigma_from_p(move_chance.mean(dim=1, keepdim=True), getattr(self.noise, 'sigma_max', None))  # (B,1)
@@ -884,6 +885,11 @@ class BlockDiffusionTrainer:
         use_eps_min = self.config.sampling_eps_min if eps_min is None else eps_min
         use_eps_max = self.config.sampling_eps_max if eps_max is None else eps_max
         xt = self.corrupt_tokens(x, move_chance, use_eps_min, use_eps_max)
+        # Assert surrogate CE rows are (almost) fully masked (ignore BOS at pos 0)
+        if _sur_idx is not None and _sur_idx.numel() > 0:
+            xt_sel = xt[_sur_idx]
+            masked_sel = (xt_sel[:, 1:] == self.mask_token_id).float().mean().item()
+            assert masked_sel > 0.95, f"Surrogate CE rows not sufficiently masked: {masked_sel:.3f}"
 
         # model forward: if cross_attn, feed xt||x0 and use 3-part mask
         if self.config.cross_attn:
