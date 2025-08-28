@@ -77,7 +77,7 @@ class Config:
     learning_rate: float = 0.02
     # AdamW often needs a much smaller LR; keep separate knob
     adamw_lr: float = 3e-4
-    weight_decay: float = 0.0
+    weight_decay: float = 0.1
     momentum: float = 0.95
     max_steps: int = 125_000
     warmup_steps: int = 2500
@@ -654,8 +654,11 @@ class BlockDiffusionTrainer:
             raise ValueError(f"Unsupported optimizer '{config.optimizer}'. Use adamw.")
         adamw_kwargs = dict(lr=config.adamw_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=config.weight_decay)
         try:
+            # Use betas tuned for LLMs to improve stability per compute
+            adamw_kwargs["betas"] = (0.9, 0.95)
             self.optimizer_adam = torch.optim.AdamW(model.parameters(), fused=True, **adamw_kwargs)  # type: ignore[call-arg]
         except TypeError:
+            adamw_kwargs["betas"] = (0.9, 0.95)
             self.optimizer_adam = torch.optim.AdamW(model.parameters(), **adamw_kwargs)
 
         # Metrics
