@@ -106,6 +106,9 @@ class Config:
     # EMA for eval stability
     use_ema_for_eval: bool = True
     ema_decay: float = 0.999
+    # CE warmup mix into SUBS (stability)
+    ce_mix_max: float = 0.1
+    ce_mix_warmup_frac: float = 0.02
     
     # System
     device: str = "cuda"
@@ -851,9 +854,33 @@ class BlockDiffusionTrainer:
                 log_score = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
                 loss_sedd_mat = self._score_entropy(log_score, sigma, xt, x)
                 loss_sedd = (dsigma.squeeze(-1)[:, None] * loss_sedd_mat).sum() / (B * T)
-                return (1.0 - mix) * loss_subs + mix * loss_sedd
+                base_loss = (1.0 - mix) * loss_subs + mix * loss_sedd
             else:
-                return loss_subs
+                base_loss = loss_subs
+
+            # Optional: blend a small CE term early on for stability
+            ce_warm_frac = float(getattr(self.config, 'ce_mix_warmup_frac', 0.0) or 0.0)
+            ce_max = float(getattr(self.config, 'ce_mix_max', 0.0) or 0.0)
+            if (ce_max > 0.0 and ce_warm_frac > 0.0 and self.config.max_steps > 0
+                and not getattr(self.config, 'compile_model', False)):
+                step_frac = min(1.0, float(self.step) / float(self.config.max_steps))
+                if step_frac < ce_warm_frac:
+                    # Linearly decay CE weight to 0 over warmup window
+                    w = ce_max * (1.0 - step_frac / ce_warm_frac)
+                    # Some torch.compile + DDP builds struggle with the extra CE path; run it eager.
+                    try:
+                        import torch._dynamo as _dynamo
+                        _use_disable = True
+                    except Exception:
+                        _use_disable = False
+                    if _use_disable:
+                        with _dynamo.disable():
+                            ce_logits = self.model(x[:, :-1], sigma=None, use_bd3lm_mask=False)
+                    else:
+                        ce_logits = self.model(x[:, :-1], sigma=None, use_bd3lm_mask=False)
+                    ce_loss = F.cross_entropy(ce_logits.reshape(-1, ce_logits.size(-1)), x[:, 1:].reshape(-1), reduction='mean')
+                    return (1.0 - w) * base_loss + w * ce_loss
+            return base_loss
         elif self.config.parameterization == 'sedd':
             # compute dsigma as in reference
             # use dsigma = -loss_scale * expm1(sigma)
