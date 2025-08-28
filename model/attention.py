@@ -265,13 +265,22 @@ class TwoStreamTransformerBlock(nn.Module):
         if use_prenorm:
             self.rms1 = RMSNorm(dim)
             self.rms2 = RMSNorm(dim)
+        # AdaLN modulation for attention and MLP
+        self.adaln = nn.Linear(dim, 6 * dim, bias=True, dtype=torch.bfloat16)
         self.mlp = SwiGLU(dim, hidden_mult=4.0, use_dwconv=use_local_mixer) if use_swiglu else MLPFallback(dim, hidden_mult=4.0, relu_squared=True)
 
-    def forward(self, xt: torch.Tensor, x0: torch.Tensor, block_mask=None, x0_kv: Optional[tuple]=None) -> torch.Tensor:
+    def forward(self, xt: torch.Tensor, x0: torch.Tensor, block_mask=None, x0_kv: Optional[tuple]=None, cond: Optional[torch.Tensor]=None) -> torch.Tensor:
+        if cond is None:
+            cond = torch.zeros(xt.size(0), xt.size(-1), device=xt.device, dtype=xt.dtype)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaln(cond).unsqueeze(1).chunk(6, dim=-1)
         h = self.rms1(xt) if self.use_prenorm else xt
-        xt = xt + self.res_scale * self.attn(h, x0, block_mask=block_mask, x0_kv=x0_kv)
+        h = h * (1 + scale_msa) + shift_msa
+        attn_out = self.attn(h, x0, block_mask=block_mask, x0_kv=x0_kv)
+        xt = xt + self.res_scale * (gate_msa * attn_out)
         h2 = self.rms2(xt) if self.use_prenorm else xt
-        xt = xt + self.res_scale * self.mlp(h2)
+        h2 = h2 * (1 + scale_mlp) + shift_mlp
+        mlp_out = self.mlp(h2)
+        xt = xt + self.res_scale * (gate_mlp * mlp_out)
         return xt
 
     @torch.no_grad()

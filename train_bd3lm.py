@@ -465,9 +465,8 @@ class BlockDiffusionLM(nn.Module):
         pos_emb = self.pos_emb(pos)
         x = (tok_emb + pos_emb).to(torch.bfloat16)
         
-        # Sigma conditioning: per-token additive on xt (when provided),
-        # fallback to sequence-wise FiLM or additive for scalar sigma.
-        film = None
+        # Sigma conditioning: build AdaLN conditioning vector per example (B, dim)
+        cond_vec = None
         if sigma is not None:
             # Support sigma as (B,), (B,1), (B,T), or (B,2T)
             sig = sigma
@@ -478,28 +477,19 @@ class BlockDiffusionLM(nn.Module):
                 # Shape (B, L) where L == T (no-CA) or 2T (CA). Embed to (B,L,D)
                 s = sig.to(x.dtype).unsqueeze(-1)
                 t_full = self.time_emb(s).to(x.dtype)
+                # Per-example cond from xt positions if BD3LM mask, else mean over all positions
                 if use_bd3lm_mask:
-                    # Apply only to xt half (first n tokens)
                     n_tok = t_full.size(1) // 2
-                    x[:, :n_tok, :] = x[:, :n_tok, :] + t_full[:, :n_tok, :]
+                    cond_vec = t_full[:, :n_tok, :].mean(dim=1)
                 else:
-                    # Non-CA path: inputs are xt only, apply everywhere
-                    x = x + t_full
+                    cond_vec = t_full.mean(dim=1)
             else:
-                # Scalar sigma per example: allow FiLM or additive sequence-wise
+                # Scalar sigma per example
                 s = sig.to(x.dtype).unsqueeze(-1)  # (B,1,1)
                 t_emb = self.time_emb(s).to(x.dtype)  # (B,1,dim)
-                if getattr(self.config, 'use_film', False):
-                    # Map (B,1,dim) -> (B,dim)
-                    t_vec = t_emb.squeeze(1)
-                    if not hasattr(self, 'film'):
-                        from model.layers import FiLM as _FiLM
-                        self.film = _FiLM(self.config.dim)
-                    gamma, beta = self.film(t_vec)
-                    film = (gamma.to(x.dtype).unsqueeze(1), beta.to(x.dtype).unsqueeze(1))
-                else:
-                    # Always add sequence-wise embedding in scalar-sigma case
-                    x = x + t_emb
+                cond_vec = t_emb.squeeze(1)
+        else:
+            cond_vec = torch.zeros(B, self.config.dim, dtype=x.dtype, device=device)
         
         x0 = x if self.config.use_unet_skips else None
         
@@ -540,10 +530,6 @@ class BlockDiffusionLM(nn.Module):
             n_half = len(self.ts_blocks) // 2
             skips = []
             for i, block in enumerate(self.ts_blocks):
-                # Apply FiLM to residual stream pre-block if enabled
-                if film is not None and getattr(self.config, 'use_film', False):
-                    gamma, beta = film
-                    xt = gamma * xt + beta
                 if getattr(self.config, 'activation_checkpoint', False):
                     import torch.utils.checkpoint as _ckpt
                     def _fn(_xt):
@@ -557,7 +543,7 @@ class BlockDiffusionLM(nn.Module):
                             assert k0.dim() == 4 and v0.dim() == 4, "cached (k0,v0) must be rank-4 tensors"
                             exp_shape = (xt.size(0), n_tok, block.attn.n_kv_heads, block.attn.head_dim)
                             assert k0.shape == exp_shape and v0.shape == exp_shape, f"cached (k0,v0) shape mismatch, expected {exp_shape}, got {k0.shape},{v0.shape}"
-                        return block(_xt, x0e, block_mask=ts_mask, x0_kv=kv)
+                        return block(_xt, x0e, block_mask=ts_mask, x0_kv=kv, cond=cond_vec)
                     xt = _ckpt.checkpoint(_fn, xt)
                 else:
                     kv = None
@@ -570,7 +556,7 @@ class BlockDiffusionLM(nn.Module):
                         assert k0.dim() == 4 and v0.dim() == 4, "cached (k0,v0) must be rank-4 tensors"
                         exp_shape = (xt.size(0), n_tok, block.attn.n_kv_heads, block.attn.head_dim)
                         assert k0.shape == exp_shape and v0.shape == exp_shape, f"cached (k0,v0) shape mismatch, expected {exp_shape}, got {k0.shape},{v0.shape}"
-                    xt = block(xt, x0e, block_mask=ts_mask, x0_kv=kv)
+                    xt = block(xt, x0e, block_mask=ts_mask, x0_kv=kv, cond=cond_vec)
                 if i < n_half:
                     skips.append(xt)
                 else:
@@ -601,9 +587,6 @@ class BlockDiffusionLM(nn.Module):
             n = len(self.blocks) // 2
             skips = []
             for i, block in enumerate(self.blocks):
-                if film is not None and getattr(self.config, 'use_film', False):
-                    gamma, beta = film
-                    x = gamma * x + beta
                 if getattr(self.config, 'activation_checkpoint', False):
                     import torch.utils.checkpoint as _ckpt
                     def _fn(_x):
