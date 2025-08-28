@@ -334,7 +334,7 @@ class TransformerBlock(nn.Module):
             use_value_embeds=config.use_value_embeds,
             attn_scale=0.12,
             qk_learned_scale=getattr(config, 'qk_learned_scale', False),
-        ) if layer_idx != 7 else None
+        )
         self.mlp = MLP(config)
         # Pre-norms
         self.use_prenorm = getattr(config, 'use_prenorm', True)
@@ -347,7 +347,7 @@ class TransformerBlock(nn.Module):
     def forward(self, x, x0, block_mask):
         if self.attn is not None:
             h = self.rms1(x) if self.use_prenorm else x
-            x = x + self.res_scale * self.attn(h, block_mask)
+            x = x + self.res_scale * self.attn(h, block_mask=block_mask)
         
         if self.config.use_unet_skips and x0 is not None:
             if self.layer_idx < self.config.n_layers // 2:

@@ -91,3 +91,32 @@ def create_bd3lm_xt_queries_mask(n_tokens: int, block_size: int, device=None):
         KV_LEN=2 * n,
         device=device,
     )
+
+
+def create_bd3lm_x0_queries_mask(n_tokens: int, block_size: int, device=None):
+    """Mask for two-stream: queries are x0 (length n), keys/values are xt||x0 (length 2n).
+    Allow x0 to attend only to x0 in block-causal fashion (previous or same block).
+    Disallow attending to xt entirely.
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    n = n_tokens
+
+    def block_mask_fn(b, h, q_idx, kv_idx):
+        # q_idx in [0, n) for x0 positions; kv_idx in [0, 2n)
+        is_kv_x0 = (kv_idx >= n)
+        q_block = q_idx // block_size
+        kv_block = torch.where(is_kv_x0 == 1, (kv_idx - n) // block_size, kv_idx // block_size)
+        # Only x0->x0, block causal (<=)
+        allow = (is_kv_x0 == 1) & (kv_block <= q_block)
+        return allow
+
+    return create_block_mask(
+        block_mask_fn,
+        B=1,
+        H=1,
+        Q_LEN=n,
+        KV_LEN=2 * n,
+        device=device,
+    )
