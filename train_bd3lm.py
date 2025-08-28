@@ -124,6 +124,7 @@ class Config:
     samples_per_eval: int = 1
     sample_length: int = 1024
     top_p: float = 0.95
+    sample_block_commit_k: int = 1  # commit k positions per step in blockwise sampler
     # Eval behavior
     ce_only: bool = False  # if True, skip BD3LM loss eval and only compute CE
     
@@ -1084,14 +1085,25 @@ class BlockDiffusionTrainer:
                     sampled = sorted_idx.gather(-1, idx).squeeze(-1)
                 else:
                     sampled = torch.argmax(probs, dim=-1)
-                # choose one masked position per batch by confidence (max prob)
-                maxp, argmax_tok = probs.max(dim=-1)
+                # choose up to K masked positions per batch by confidence (max prob)
+                maxp, _ = probs.max(dim=-1)
                 masked_scores = maxp.masked_fill(~masked, -1.0)
-                pos_idx = masked_scores.argmax(dim=-1)
-                # gather sampled token for that position and update
-                arange_b = torch.arange(B, device=device)
-                x0[arange_b, start + pos_idx] = sampled[arange_b, pos_idx]
-                xt[arange_b, start + pos_idx] = x0[arange_b, start + pos_idx]
+                K = max(1, int(getattr(self.config, 'sample_block_commit_k', 1)))
+                if K == 1:
+                    pos_idx = masked_scores.argmax(dim=-1)
+                    arange_b = torch.arange(B, device=device)
+                    x0[arange_b, start + pos_idx] = sampled[arange_b, pos_idx]
+                    xt[arange_b, start + pos_idx] = x0[arange_b, start + pos_idx]
+                else:
+                    # topk per batch row
+                    k_eff = min(K, end - start)
+                    topk_vals, topk_pos = masked_scores.topk(k_eff, dim=-1)
+                    # ensure we only update masked entries (ignore -1 scores)
+                    for kk in range(k_eff):
+                        pos = topk_pos[:, kk]
+                        arange_b = torch.arange(B, device=device)
+                        x0[arange_b, start + pos] = sampled[arange_b, pos]
+                        xt[arange_b, start + pos] = x0[arange_b, start + pos]
                 step_idx += 1
         return self._decode_tokens(x0)
 
