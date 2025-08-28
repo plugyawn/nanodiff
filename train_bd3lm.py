@@ -110,6 +110,10 @@ class Config:
     # CE warmup mix into SUBS (stability)
     ce_mix_max: float = 0.1
     ce_mix_warmup_frac: float = 0.02
+    # CE surrogate (no extra forward): mask a fraction of the batch to p≈1
+    surrogate_ce_enable: bool = True
+    surrogate_ce_frac: float = 0.2
+    surrogate_ce_warmup_frac: float = 0.02
     # Parallel noise replicas per batch element
     noise_replicas: int = 1
     # CE eval mode: 'auto' (AR for single-stream, BD3LM-consistent for two-stream), 'ar', or 'bd3lm'
@@ -694,6 +698,14 @@ class BlockDiffusionTrainer:
         self.ema = None
         if getattr(config, 'use_ema_for_eval', False):
             self.ema = _ModelEMA(model, decay=getattr(config, 'ema_decay', 0.999))
+
+        # Config sanity checks
+        if hasattr(self.config, 'surrogate_ce_frac'):
+            f = float(self.config.surrogate_ce_frac)
+            assert 0.0 <= f <= 1.0, f"surrogate_ce_frac must be in [0,1], got {f}"
+        if hasattr(self.config, 'surrogate_ce_warmup_frac'):
+            wf = float(self.config.surrogate_ce_warmup_frac)
+            assert 0.0 <= wf <= 1.0, f"surrogate_ce_warmup_frac must be in [0,1], got {wf}"
         
     # ---------------------- Noise schedules (official) ----------------------
     class _Noise:
@@ -836,6 +848,26 @@ class BlockDiffusionTrainer:
         # sample per-block times and get noise schedule terms
         t = self._sample_t(B, T, device)  # (B,T)
         loss_scale, move_chance = self.noise(t)
+        # Surrogate CE (no extra forward): during early warmup, force a
+        # fraction of the batch to p≈1 (fully masked xt), which makes SUBS
+        # behave like CE for those examples. This keeps a single compiled pass.
+        if getattr(self.config, 'surrogate_ce_enable', False):
+            warm_frac = float(getattr(self.config, 'surrogate_ce_warmup_frac', 0.0) or 0.0)
+            frac = float(getattr(self.config, 'surrogate_ce_frac', 0.0) or 0.0)
+            if warm_frac > 0.0 and 0.0 <= frac <= 1.0 and self.config.max_steps > 0:
+                step_frac = min(1.0, float(self.step) / float(self.config.max_steps))
+                if step_frac < warm_frac and B >= 2 and frac > 0.0:
+                    k = max(1, int(round(B * frac)))
+                    k = min(k, B-1)  # keep at least one regular example
+                    idx = torch.randperm(B, device=device)[:k]
+                    # Force p=1 on these rows
+                    move_chance[idx, :] = 1.0
+                    # Recompute loss_scale on t=1 for those rows using the schedule
+                    ones = torch.ones_like(t[idx, :])
+                    ls_one, _p_one = self.noise(ones)
+                    # Guard shapes and dtype
+                    assert ls_one.shape == t[idx, :].shape
+                    loss_scale[idx, :] = ls_one.to(loss_scale.dtype)
         # compute sigma per-token for conditioning, and per-example for loss scale terms
         sigma_tok = self._sigma_from_p(move_chance, getattr(self.noise, 'sigma_max', None))  # (B,T)
         sigma = self._sigma_from_p(move_chance.mean(dim=1, keepdim=True), getattr(self.noise, 'sigma_max', None))  # (B,1)
@@ -894,8 +926,15 @@ class BlockDiffusionTrainer:
                 if step_frac < ce_warm_frac:
                     # Linearly decay CE weight to 0 over warmup window
                     w = ce_max * (1.0 - step_frac / ce_warm_frac)
-                    # Compute CE logits directly (works with or without torch.compile)
-                    ce_logits = self.model(x[:, :-1], sigma=None, use_bd3lm_mask=False)
+                    # Compute CE logits via the original (uncompiled) module to avoid
+                    # DDP+Inductor issues, while keeping the main BD3LM path compiled.
+                    ce_inputs = x[:, :-1]
+                    mdl = self.model
+                    # unwrap DDP and compiled wrappers safely
+                    if hasattr(mdl, 'module'):
+                        mdl = mdl.module
+                    mdl = getattr(mdl, '_orig_mod', mdl)
+                    ce_logits = mdl(ce_inputs, sigma=None, use_bd3lm_mask=False)
                     ce_loss = F.cross_entropy(ce_logits.reshape(-1, ce_logits.size(-1)), x[:, 1:].reshape(-1), reduction='mean')
                     return (1.0 - w) * base_loss + w * ce_loss
             return base_loss
@@ -1616,6 +1655,10 @@ def main():
     parser.add_argument('--noise_replicas', type=int, default=None, help='Replicate each batch element this many times along noise axis')
     parser.add_argument('--sample_block_commit_k', type=int, default=None, help='Commit this many positions per step in blockwise sampler')
     parser.add_argument('--grad_accum_steps', type=int, default=None, help='Accumulate gradients over this many micro-steps')
+    # Surrogate CE (no extra forward)
+    parser.add_argument('--no_surrogate_ce', action='store_true', help='Disable surrogate CE (p≈1 masking) warmup')
+    parser.add_argument('--surrogate_ce_frac', type=float, default=None, help='Fraction of batch to set p≈1 during warmup')
+    parser.add_argument('--surrogate_ce_warmup_frac', type=float, default=None, help='Warmup fraction for surrogate CE masking')
     # Resume
     parser.add_argument('--resume_dir', type=str, default=None, help='Resume from latest ckpt in this directory')
     parser.add_argument('--resume_path', type=str, default=None, help='Resume from this exact ckpt path')
@@ -1697,6 +1740,12 @@ def main():
         config.sample_block_commit_k = int(args.sample_block_commit_k)
     if args.grad_accum_steps is not None:
         config.grad_accum_steps = int(args.grad_accum_steps)
+    if args.no_surrogate_ce:
+        config.surrogate_ce_enable = False
+    if args.surrogate_ce_frac is not None:
+        config.surrogate_ce_frac = float(args.surrogate_ce_frac)
+    if args.surrogate_ce_warmup_frac is not None:
+        config.surrogate_ce_warmup_frac = float(args.surrogate_ce_warmup_frac)
     # WandB toggles and project
     if args.wandb:
         config.use_wandb = True
