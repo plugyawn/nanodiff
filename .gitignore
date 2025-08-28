@@ -36,6 +36,7 @@ downloads/
 eggs/
 .eggs/
 wheels/
+paper_code/
 share/python-wheels/
 *.egg-info/
 *.egg
