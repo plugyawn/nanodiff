@@ -168,15 +168,27 @@ class TwoStreamBlock(nn.Module):
             self.q_scale = nn.Parameter(torch.ones(n_heads, 1, 1, dtype=torch.bfloat16))
             self.k_scale = nn.Parameter(torch.ones(n_heads, 1, 1, dtype=torch.bfloat16))
 
-    def forward(self, xt: torch.Tensor, x0: torch.Tensor, *, block_mask=None) -> torch.Tensor:
+    def forward(self, xt: torch.Tensor, x0: torch.Tensor, *, block_mask=None, x0_kv: Optional[tuple]=None) -> torch.Tensor:
         B, T, D = xt.shape
         xt = xt.to(torch.bfloat16)
         x0 = x0.to(torch.bfloat16)
-        # Project q from xt; k,v from concat(x0, xt)
+        # Project q from xt; K,V from xt and (optionally cached) x0
         q = self.wq(xt)
-        kv_src = torch.cat([xt, x0], dim=1)
-        k = self.wk(kv_src)
-        v = self.wv(kv_src)
+        if x0_kv is None:
+            kv_src = torch.cat([xt, x0], dim=1)
+            k = self.wk(kv_src)
+            v = self.wv(kv_src)
+        else:
+            k0, v0 = x0_kv
+            assert k0.dim() == 4 and v0.dim() == 4, "x0_kv must be (k0,v0) with shapes (B,T,Hkv,D)"
+            # K,V for xt tokens
+            kx = self.wk(xt)
+            vx = self.wv(xt)
+            # reshape and concat along sequence axis (xt first, then x0)
+            kx = kx.view(B, T, self.n_kv_heads, self.head_dim)
+            vx = vx.view(B, T, self.n_kv_heads, self.head_dim)
+            k = torch.cat([kx, k0], dim=1)
+            v = torch.cat([vx, v0], dim=1)
         # reshape
         q = q.view(B, T, self.n_heads, self.head_dim)
         k = k.view(B, 2 * T, self.n_kv_heads, self.head_dim)
@@ -251,9 +263,19 @@ class TwoStreamTransformerBlock(nn.Module):
             self.rms2 = RMSNorm(dim)
         self.mlp = SwiGLU(dim, hidden_mult=4.0, use_dwconv=use_local_mixer) if use_swiglu else MLPFallback(dim, hidden_mult=4.0, relu_squared=True)
 
-    def forward(self, xt: torch.Tensor, x0: torch.Tensor, block_mask=None) -> torch.Tensor:
+    def forward(self, xt: torch.Tensor, x0: torch.Tensor, block_mask=None, x0_kv: Optional[tuple]=None) -> torch.Tensor:
         h = self.rms1(xt) if self.use_prenorm else xt
-        xt = xt + self.res_scale * self.attn(h, x0, block_mask=block_mask)
+        xt = xt + self.res_scale * self.attn(h, x0, block_mask=block_mask, x0_kv=x0_kv)
         h2 = self.rms2(xt) if self.use_prenorm else xt
         xt = xt + self.res_scale * self.mlp(h2)
         return xt
+
+    @torch.no_grad()
+    def project_x0_kv(self, x0: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Project x0 tokens to (k0, v0) before normalization/rotary.
+        Returns tensors of shape (B, T, H_kv, D) in bf16.
+        """
+        B, T, D = x0.shape
+        k0 = self.attn.wk(x0).view(B, T, self.attn.n_kv_heads, self.attn.head_dim)
+        v0 = self.attn.wv(x0).view(B, T, self.attn.n_kv_heads, self.attn.head_dim)
+        return k0.to(torch.bfloat16), v0.to(torch.bfloat16)

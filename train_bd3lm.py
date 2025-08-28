@@ -448,7 +448,7 @@ class BlockDiffusionLM(nn.Module):
             if isinstance(module, nn.Linear) and module.bias is not None:
                 module.bias.data.zero_()
     
-    def forward(self, x, sigma=None, use_bd3lm_mask: bool = False):
+    def forward(self, x, sigma=None, use_bd3lm_mask: bool = False, x0_kv_cache: Optional[list] = None):
         B, T = x.shape
         device = x.device
         # Guard against positional index overflow
@@ -545,10 +545,18 @@ class BlockDiffusionLM(nn.Module):
                 if getattr(self.config, 'activation_checkpoint', False):
                     import torch.utils.checkpoint as _ckpt
                     def _fn(_xt):
-                        return block(_xt, x0e, block_mask=ts_mask)
+                        kv = None
+                        if x0_kv_cache is not None:
+                            assert isinstance(x0_kv_cache, list) and len(x0_kv_cache) == len(self.ts_blocks), "x0_kv_cache must be list[(k0,v0)] per layer"
+                            kv = x0_kv_cache[i]
+                        return block(_xt, x0e, block_mask=ts_mask, x0_kv=kv)
                     xt = _ckpt.checkpoint(_fn, xt)
                 else:
-                    xt = block(xt, x0e, block_mask=ts_mask)
+                    kv = None
+                    if x0_kv_cache is not None:
+                        assert isinstance(x0_kv_cache, list) and len(x0_kv_cache) == len(self.ts_blocks), "x0_kv_cache must be list[(k0,v0)] per layer"
+                        kv = x0_kv_cache[i]
+                    xt = block(xt, x0e, block_mask=ts_mask, x0_kv=kv)
                 if i < n_half:
                     skips.append(xt)
                 else:
@@ -604,6 +612,26 @@ class BlockDiffusionLM(nn.Module):
             logits = self.config.softcap * torch.tanh(logits / self.config.softcap)
         
         return logits
+
+    @torch.no_grad()
+    def precompute_x0_kv(self, x_tokens: torch.Tensor) -> list:
+        """Precompute per-layer x0 K/V projections for two-stream.
+        Returns list of (k0, v0) with shapes (B, T, H_kv, D).
+        """
+        assert getattr(self.config, 'use_two_stream', False), "precompute_x0_kv requires two-stream config"
+        device = x_tokens.device
+        B, T = x_tokens.shape
+        # Embed tokens + positions; no time conditioning on x0
+        tok_emb = self.token_emb(x_tokens)
+        pos = torch.arange(0, T, dtype=torch.long, device=device).unsqueeze(0)
+        pos_emb = self.pos_emb(pos)
+        x0e = (tok_emb + pos_emb).to(torch.bfloat16)
+        kv_list = []
+        for i, block in enumerate(self.ts_blocks):
+            k0, v0 = block.project_x0_kv(x0e)
+            assert k0.shape[:2] == (B, T) and v0.shape[:2] == (B, T), "x0_kv wrong shape"
+            kv_list.append((k0, v0))
+        return kv_list
 
 # -----------------------------------------------------------------------------
 # Discrete Block Diffusion Trainer
@@ -1053,6 +1081,11 @@ class BlockDiffusionTrainer:
             start = b * bs
             end = min(T, start + bs)
             step_idx = 0
+            # Precompute x0 K/V for all layers once per block when using two-stream
+            x0_kv_cache = None
+            if getattr(self.config, 'use_two_stream', False):
+                # x0e is derived from x0 token ids; sigma=0 on x0 half
+                x0_kv_cache = model.precompute_x0_kv(x0)
             # iteratively fill this block one token at a time
             while True:
                 masked = (x0[:, start:end] == mask_id)
@@ -1063,7 +1096,8 @@ class BlockDiffusionTrainer:
                 sigma = self._sigma_from_p(p, getattr(self.noise, 'sigma_max', None))
                 # build input as xt||x0 as in training when cross_attn
                 x_in = torch.cat([xt, x0], dim=1)
-                logits = model(x_in, sigma, use_bd3lm_mask=True)
+                # Provide per-token sigma on xt half only
+                logits = model(x_in, sigma, use_bd3lm_mask=True, x0_kv_cache=x0_kv_cache)
                 if not getattr(self.config, 'use_two_stream', False):
                     logits = logits[:, :T]  # decode xt half
                 block_logits = logits[:, start:end]
