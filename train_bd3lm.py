@@ -110,6 +110,8 @@ class Config:
     # CE warmup mix into SUBS (stability)
     ce_mix_max: float = 0.1
     ce_mix_warmup_frac: float = 0.02
+    # Parallel noise replicas per batch element
+    noise_replicas: int = 1
     
     # System
     device: str = "cuda"
@@ -799,6 +801,11 @@ class BlockDiffusionTrainer:
         """Compute BD3LM objective according to parameterization."""
         B, T = x.shape
         device = x.device
+        # Optional in-batch replication along the noise axis for better parallelism and variance reduction
+        reps = max(1, int(getattr(self.config, 'noise_replicas', 1)))
+        if reps > 1:
+            x = x.repeat_interleave(reps, dim=0)
+            B = B * reps
 
         if self.config.parameterization == 'ar':
             # next-token prediction
