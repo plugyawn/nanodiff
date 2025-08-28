@@ -112,6 +112,8 @@ class Config:
     ce_mix_warmup_frac: float = 0.02
     # Parallel noise replicas per batch element
     noise_replicas: int = 1
+    # CE eval mode: 'auto' (AR for single-stream, BD3LM-consistent for two-stream), 'ar', or 'bd3lm'
+    ce_eval_mode: str = 'auto'
     
     # System
     device: str = "cuda"
@@ -1368,11 +1370,25 @@ def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: F
         with amp_ctx, torch.inference_mode():
             for _ in range(steps):
                 batch = sampler.next_batch()
-                # Keep sequence length equal to training to avoid recompiles; slice logits for CE
-                logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
-                ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
-                total_ce += ce * batch[:, 1:].numel()
-                total_ce_tokens += torch.tensor(float(batch[:, 1:].numel()), device=trainer.device)
+                mode = getattr(config, 'ce_eval_mode', 'auto')
+                use_two_stream = getattr(config, 'use_two_stream', False)
+                if mode == 'auto':
+                    mode = 'bd3lm' if use_two_stream else 'ar'
+                if mode == 'ar':
+                    logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
+                    ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
+                    total_ce += ce * batch[:, 1:].numel()
+                    total_ce_tokens += torch.tensor(float(batch[:, 1:].numel()), device=trainer.device)
+                else:
+                    # BD3LM-consistent CE: predict tokens at current positions using previous-block context
+                    mask_id = trainer.mask_token_id
+                    xt_mask = torch.full_like(batch, mask_id)
+                    x_in = torch.cat([xt_mask, batch], dim=1)
+                    sigma0 = torch.zeros(batch.size(0), 1, device=trainer.device)
+                    logits_xt = trainer.model(x_in, sigma0, use_bd3lm_mask=True)
+                    ce = F.cross_entropy(logits_xt.reshape(-1, logits_xt.size(-1)), batch.reshape(-1), reduction='mean')
+                    total_ce += ce * batch.numel()
+                    total_ce_tokens += torch.tensor(float(batch.numel()), device=trainer.device)
                 pbar.update(1)
         pbar.close()
         if world_size > 1:
@@ -1401,11 +1417,25 @@ def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: F
                 toks = torch.tensor(batch.numel(), device=trainer.device, dtype=torch.float32)
                 total_loss += loss * toks
                 total_tokens += toks
-                # NanoGPT-style CE on the same batch (keep input length equal to training)
-                logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
-                ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
-                total_ce += ce * (batch.size(0) * (batch.size(1) - 1))
-                total_ce_tokens += torch.tensor(float(batch.size(0) * (batch.size(1) - 1)), device=trainer.device)
+                # CE metric by mode
+                mode = getattr(config, 'ce_eval_mode', 'auto')
+                use_two_stream = getattr(config, 'use_two_stream', False)
+                if mode == 'auto':
+                    mode = 'bd3lm' if use_two_stream else 'ar'
+                if mode == 'ar':
+                    logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
+                    ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
+                    total_ce += ce * (batch.size(0) * (batch.size(1) - 1))
+                    total_ce_tokens += torch.tensor(float(batch.size(0) * (batch.size(1) - 1)), device=trainer.device)
+                else:
+                    mask_id = trainer.mask_token_id
+                    xt_mask = torch.full_like(batch, mask_id)
+                    x_in = torch.cat([xt_mask, batch], dim=1)
+                    sigma0 = torch.zeros(batch.size(0), 1, device=trainer.device)
+                    logits_xt = trainer.model(x_in, sigma0, use_bd3lm_mask=True)
+                    ce = F.cross_entropy(logits_xt.reshape(-1, logits_xt.size(-1)), batch.reshape(-1), reduction='mean')
+                    total_ce += ce * batch.numel()
+                    total_ce_tokens += torch.tensor(float(batch.numel()), device=trainer.device)
                 pbar.update(1)
         pbar.close()
         if world_size > 1:
@@ -1437,11 +1467,25 @@ def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: F
                 loss_c = trainer.compute_loss(batch, eps_min=float(c), eps_max=1.0)
                 # store python float to keep small and all-reduce later
                 losses_by_c[c].append(float(loss_c))
-            # Also accumulate NanoGPT-style CE per batch once (keep input length equal to training)
-            logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
-            ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
-            ce_accum += ce * (batch.size(0) * (batch.size(1) - 1))
-            ce_tokens += torch.tensor(float(batch.size(0) * (batch.size(1) - 1)), device=trainer.device)
+            # Also accumulate CE per batch once
+            mode = getattr(config, 'ce_eval_mode', 'auto')
+            use_two_stream = getattr(config, 'use_two_stream', False)
+            if mode == 'auto':
+                mode = 'bd3lm' if use_two_stream else 'ar'
+            if mode == 'ar':
+                logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
+                ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
+                ce_accum += ce * (batch.size(0) * (batch.size(1) - 1))
+                ce_tokens += torch.tensor(float(batch.size(0) * (batch.size(1) - 1)), device=trainer.device)
+            else:
+                mask_id = trainer.mask_token_id
+                xt_mask = torch.full_like(batch, mask_id)
+                x_in = torch.cat([xt_mask, batch], dim=1)
+                sigma0 = torch.zeros(batch.size(0), 1, device=trainer.device)
+                logits_xt = trainer.model(x_in, sigma0, use_bd3lm_mask=True)
+                ce = F.cross_entropy(logits_xt.reshape(-1, logits_xt.size(-1)), batch.reshape(-1), reduction='mean')
+                ce_accum += ce * batch.numel()
+                ce_tokens += torch.tensor(float(batch.numel()), device=trainer.device)
             pbar.update(1)
     pbar.close()
 
