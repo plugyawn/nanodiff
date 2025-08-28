@@ -151,6 +151,7 @@ torchrun \
     $(if [ -n "${SAMPLES_PER_EVAL}" ]; then echo --samples_per_eval ${SAMPLES_PER_EVAL}; fi) \
     $(if [ "${EVAL_CE_ONLY}" = "1" ]; then echo --eval_ce_only; fi) \
     $(if [ -n "${COMPILE}" ]; then echo --compile; fi) \
+    $(if [ "${ACT_CKPT}" = "1" ]; then echo --activation_checkpoint; fi) \
     $(if [ "${DDP_FP16_COMPRESS}" = "1" ]; then echo --ddp_fp16_compress; fi) \
     $(if [ "${ENABLE_WANDB}" = "1" ]; then echo --wandb --project_name "${WANDB_PROJECT}"; fi) \
     $(if [ -n "${ADAMW_LR}" ]; then echo --adamw_lr ${ADAMW_LR}; fi) \

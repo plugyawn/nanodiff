@@ -102,6 +102,7 @@ class Config:
     sedd_mix_frac: float = 0.0
     compile_model: bool = False
     compile_zeropower: bool = False
+    activation_checkpoint: bool = False
     
     # System
     device: str = "cuda"
@@ -528,7 +529,13 @@ class BlockDiffusionLM(nn.Module):
                 if film is not None and getattr(self.config, 'use_film', False):
                     gamma, beta = film
                     xt = gamma * xt + beta
-                xt = block(xt, x0e, block_mask=ts_mask)
+                if getattr(self.config, 'activation_checkpoint', False):
+                    import torch.utils.checkpoint as _ckpt
+                    def _fn(_xt):
+                        return block(_xt, x0e, block_mask=ts_mask)
+                    xt = _ckpt.checkpoint(_fn, xt)
+                else:
+                    xt = block(xt, x0e, block_mask=ts_mask)
                 if i < n_half:
                     skips.append(xt)
                 else:
@@ -562,7 +569,13 @@ class BlockDiffusionLM(nn.Module):
                 if film is not None and getattr(self.config, 'use_film', False):
                     gamma, beta = film
                     x = gamma * x + beta
-                x = block(x, x0, attn_mask)
+                if getattr(self.config, 'activation_checkpoint', False):
+                    import torch.utils.checkpoint as _ckpt
+                    def _fn(_x):
+                        return block(_x, x0, attn_mask)
+                    x = _ckpt.checkpoint(_fn, x)
+                else:
+                    x = block(x, x0, attn_mask)
                 if i < n:
                     skips.append(x)
                 else:
@@ -1416,6 +1429,7 @@ def main():
     parser.add_argument('--eval_ce_only', action='store_true', help='Eval only CE (skip BD3LM loss/var-min)')
     parser.add_argument('--compile', action='store_true', help='torch.compile the model forward pass')
     parser.add_argument('--ddp_fp16_compress', action='store_true', help='Compress gradients to FP16 during DDP all-reduce')
+    parser.add_argument('--activation_checkpoint', action='store_true', help='Enable activation checkpointing in transformer blocks')
     parser.add_argument('--max_steps', type=int, default=None, help='Override total training steps')
     parser.add_argument('--train_tokens', type=int, default=None, help='Target total training tokens; derives max_steps = ceil(train_tokens / (global_batch * seq_len))')
     # Architecture knobs
@@ -1448,6 +1462,8 @@ def main():
         config.compile_zeropower = True
     if args.compile:
         config.compile_model = True
+    if args.activation_checkpoint:
+        config.activation_checkpoint = True
     if args.train_files is not None:
         config.train_files = args.train_files
     if args.no_align_bos:
