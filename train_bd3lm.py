@@ -125,6 +125,7 @@ class Config:
     sample_length: int = 1024
     top_p: float = 0.95
     sample_block_commit_k: int = 1  # commit k positions per step in blockwise sampler
+    grad_accum_steps: int = 1
     # Eval behavior
     ce_only: bool = False  # if True, skip BD3LM loss eval and only compute CE
     
@@ -1911,10 +1912,34 @@ def main():
         # Rank-0 progress bar across training steps
         train_pbar = tqdm(total=config.max_steps, initial=trainer.step, desc="Train", disable=(rank != 0))
         while trainer.step < config.max_steps:
-            # Use local shard per rank; DDP handles gradient sync automatically.
-            batch = train_sampler.next_batch()
-            loss = trainer.train_step(batch)
-            running_loss += loss
+            # Gradient accumulation over micro-steps
+            micro = max(1, int(getattr(config, 'grad_accum_steps', 1)))
+            accum_loss = 0.0
+            for m in range(micro):
+                batch = train_sampler.next_batch()
+                # Scale loss inside trainer by 1/micro via manual division
+                trainer.model.train()
+                if trainer.optimizer_muon is not None:
+                    # zero grads only at outer boundary
+                    if m == 0:
+                        trainer.optimizer_muon.zero_grad(set_to_none=True)
+                if trainer.optimizer_adam is not None:
+                    if m == 0:
+                        trainer.optimizer_adam.zero_grad(set_to_none=True)
+                loss = trainer.compute_loss(batch) / micro
+                loss.backward()
+                accum_loss += float(loss.item())
+            # clip and step once
+            torch.nn.utils.clip_grad_norm_(trainer.model.parameters(), 1.0)
+            if trainer.optimizer_muon is not None and len(list(trainer.optimizer_muon.param_groups[0]['params'])):
+                trainer.optimizer_muon.step()
+            if trainer.optimizer_adam is not None and len(list(trainer.optimizer_adam.param_groups[0]['params'])):
+                trainer.optimizer_adam.step()
+            # EMA update and step count
+            if getattr(trainer, 'ema', None) is not None:
+                trainer.ema.update(trainer.model)
+            trainer.step += 1
+            running_loss += accum_loss
             if rank == 0:
                 train_pbar.update(1)
             
