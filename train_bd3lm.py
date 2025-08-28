@@ -410,10 +410,17 @@ class BlockDiffusionLM(nn.Module):
             self.bd3lm_mask = create_bd3lm_mask(config.max_seq_len, config.block_size, device=module_device)
             # two-stream: queries=xt (len n), kv=xt||x0 (len 2n)
             self.bd3lm_ts_mask = create_bd3lm_xt_queries_mask(config.max_seq_len, config.block_size, device=module_device)
+            # simple LRU cache for masks by (kind, n)
+            self._mask_cache = {
+                'block': {},      # key: T
+                'bd3lm': {},      # key: n (xt tokens)
+                'bd3lm_ts': {},   # key: n (xt tokens)
+            }
         else:
             self.block_mask = None
             self.bd3lm_mask = None
             self.bd3lm_ts_mask = None
+            self._mask_cache = None
 
         # Learnable gating for UNet-like skips
         assert config.n_layers % 2 == 0
@@ -489,14 +496,29 @@ class BlockDiffusionLM(nn.Module):
                 n_tok = total_T // 2
                 xt = x[:, :n_tok, :]
                 x0e = x[:, n_tok:, :]
-                # Regenerate a matching two-stream mask for current length
-                ts_mask = create_bd3lm_xt_queries_mask(n_tok, self.config.block_size, device=device) if self.config.use_flex_attention else None
+                # Fetch/cache a matching two-stream mask for current length
+                if self.config.use_flex_attention:
+                    cache = self._mask_cache['bd3lm_ts']
+                    ts_mask = cache.get(n_tok)
+                    if ts_mask is None:
+                        ts_mask = create_bd3lm_xt_queries_mask(n_tok, self.config.block_size, device=device)
+                        cache[n_tok] = ts_mask
+                else:
+                    ts_mask = None
             else:
                 # Single-stream inputs: reuse two-stream blocks by setting xt=x and x0=x
                 # and using a two-stream mask that yields block-causal behavior.
                 xt = x
                 x0e = x
-                ts_mask = create_bd3lm_xt_queries_mask(x.size(1), self.config.block_size, device=device) if self.config.use_flex_attention else None
+                if self.config.use_flex_attention:
+                    n_tok = x.size(1)
+                    cache = self._mask_cache['bd3lm_ts']
+                    ts_mask = cache.get(n_tok)
+                    if ts_mask is None:
+                        ts_mask = create_bd3lm_xt_queries_mask(n_tok, self.config.block_size, device=device)
+                        cache[n_tok] = ts_mask
+                else:
+                    ts_mask = None
 
             # U-Net style skip connections with gating on xt stream
             n_half = len(self.ts_blocks) // 2
@@ -515,17 +537,22 @@ class BlockDiffusionLM(nn.Module):
         else:
             # Single-stream path (original)
             if self.config.use_flex_attention:
-                attn_mask = self.bd3lm_mask if use_bd3lm_mask else self.block_mask
                 T_eff = x.size(1)
-                if attn_mask is not None:
-                    mask_len = attn_mask.shape[2]
-                    if use_bd3lm_mask:
-                        n_tok = max(1, T_eff // 2)
-                        if mask_len != (2 * n_tok):
-                            attn_mask = create_bd3lm_mask(n_tok, self.config.block_size, device=device)
-                    else:
-                        if mask_len != T_eff:
-                            attn_mask = create_block_diff_mask(T_eff, self.config.block_size, device=device)
+                if use_bd3lm_mask:
+                    n_tok = max(1, T_eff // 2)
+                    # cache BD3LM 2n-length mask keyed by n_tok
+                    cache = self._mask_cache['bd3lm']
+                    attn_mask = cache.get(n_tok)
+                    if attn_mask is None:
+                        attn_mask = create_bd3lm_mask(n_tok, self.config.block_size, device=device)
+                        cache[n_tok] = attn_mask
+                else:
+                    # cache block mask keyed by T_eff
+                    cache = self._mask_cache['block']
+                    attn_mask = cache.get(T_eff)
+                    if attn_mask is None:
+                        attn_mask = create_block_diff_mask(T_eff, self.config.block_size, device=device)
+                        cache[T_eff] = attn_mask
             else:
                 attn_mask = None
 
