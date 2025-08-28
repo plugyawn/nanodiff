@@ -41,7 +41,7 @@ share/python-wheels/
 *.egg-info/
 *.egg
 MANIFEST
-
+*.log
 # Testing / coverage / type-check caches
 .pytest_cache/
 .mypy_cache/

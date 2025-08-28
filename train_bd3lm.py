@@ -108,10 +108,13 @@ class Config:
     use_ema_for_eval: bool = True
     ema_decay: float = 0.999
     # CE warmup mix into SUBS (stability)
-    ce_mix_max: float = 0.1
+    ce_mix_max: float = 0.0
     ce_mix_warmup_frac: float = 0.02
+    # Lightweight auxiliary masked-CE on masked tokens only (single forward)
+    aux_masked_ce_w: float = 0.05
+    aux_masked_ce_warmup_frac: float = 0.05
     # CE surrogate (no extra forward): mask a fraction of the batch to p≈1
-    surrogate_ce_enable: bool = True
+    surrogate_ce_enable: bool = False
     surrogate_ce_frac: float = 0.2
     surrogate_ce_warmup_frac: float = 0.02
     # Parallel noise replicas per batch element
@@ -706,6 +709,15 @@ class BlockDiffusionTrainer:
         if hasattr(self.config, 'surrogate_ce_warmup_frac'):
             wf = float(self.config.surrogate_ce_warmup_frac)
             assert 0.0 <= wf <= 1.0, f"surrogate_ce_warmup_frac must be in [0,1], got {wf}"
+        if hasattr(self.config, 'aux_masked_ce_warmup_frac'):
+            wf2 = float(self.config.aux_masked_ce_warmup_frac)
+            assert 0.0 <= wf2 <= 1.0, f"aux_masked_ce_warmup_frac must be in [0,1], got {wf2}"
+        if hasattr(self.config, 'aux_masked_ce_w'):
+            aw = float(self.config.aux_masked_ce_w)
+            assert aw >= 0.0, f"aux_masked_ce_w must be non-negative, got {aw}"
+        if hasattr(self.config, 'x0_update_top_k'):
+            k = int(getattr(self.config, 'x0_update_top_k', 0) or 0)
+            assert k >= 0, f"x0_update_top_k must be >= 0, got {k}"
         
     # ---------------------- Noise schedules (official) ----------------------
     class _Noise:
@@ -885,11 +897,19 @@ class BlockDiffusionTrainer:
         use_eps_min = self.config.sampling_eps_min if eps_min is None else eps_min
         use_eps_max = self.config.sampling_eps_max if eps_max is None else eps_max
         xt = self.corrupt_tokens(x, move_chance, use_eps_min, use_eps_max)
-        # Assert surrogate CE rows are (almost) fully masked (ignore BOS at pos 0)
-        if _sur_idx is not None and _sur_idx.numel() > 0:
-            xt_sel = xt[_sur_idx]
-            masked_sel = (xt_sel[:, 1:] == self.mask_token_id).float().mean().item()
-            assert masked_sel > 0.95, f"Surrogate CE rows not sufficiently masked: {masked_sel:.3f}"
+        # Light-weight safety check: only on first surrogate step and rank 0 to avoid
+        # per-step host/device sync overhead that can tank throughput under compile.
+        if _sur_idx is not None and _sur_idx.numel() > 0 and self.step == 0:
+            import os
+            try:
+                _rank = int(os.environ.get('RANK', '0'))
+            except Exception:
+                _rank = 0
+            if _rank == 0:
+                xt_sel = xt[_sur_idx]
+                # fraction of masked tokens excluding BOS
+                masked_sel = (xt_sel[:, 1:] == self.mask_token_id).float().mean().item()
+                assert masked_sel > 0.95, f"Surrogate CE rows not sufficiently masked: {masked_sel:.3f}"
 
         # model forward: if cross_attn, feed xt||x0 and use 3-part mask
         if self.config.cross_attn:
@@ -943,6 +963,19 @@ class BlockDiffusionTrainer:
                     ce_logits = mdl(ce_inputs, sigma=None, use_bd3lm_mask=False)
                     ce_loss = F.cross_entropy(ce_logits.reshape(-1, ce_logits.size(-1)), x[:, 1:].reshape(-1), reduction='mean')
                     return (1.0 - w) * base_loss + w * ce_loss
+            
+            # Optional: lightweight masked-CE auxiliary (no extra forward).
+            # Uses the same logits/log_probs and only masked positions.
+            aux_w = float(getattr(self.config, 'aux_masked_ce_w', 0.0) or 0.0)
+            aux_warm = float(getattr(self.config, 'aux_masked_ce_warmup_frac', 0.0) or 0.0)
+            if aux_w > 0.0 and aux_warm > 0.0 and self.config.max_steps > 0:
+                step_frac = min(1.0, float(self.step) / float(self.config.max_steps))
+                w_aux = aux_w * max(0.0, 1.0 - step_frac / aux_warm)
+                if w_aux > 0.0:
+                    # masked CE on the same masked tokens (unscaled by loss_scale)
+                    token_logp = torch.gather(log_probs, dim=-1, index=x.unsqueeze(-1)).squeeze(-1)
+                    ce_masked = -(token_logp * masked.float()).sum() / max(1, masked.sum())
+                    base_loss = (1.0 - w_aux) * base_loss + w_aux * ce_masked
             return base_loss
         elif self.config.parameterization == 'sedd':
             # compute dsigma as in reference
@@ -1665,6 +1698,9 @@ def main():
     parser.add_argument('--no_surrogate_ce', action='store_true', help='Disable surrogate CE (p≈1 masking) warmup')
     parser.add_argument('--surrogate_ce_frac', type=float, default=None, help='Fraction of batch to set p≈1 during warmup')
     parser.add_argument('--surrogate_ce_warmup_frac', type=float, default=None, help='Warmup fraction for surrogate CE masking')
+    parser.add_argument('--x0_update_top_k', type=int, default=None, help='Update x0 via attention in last K two-stream layers (0=off)')
+    parser.add_argument('--aux_masked_ce_w', type=float, default=None, help='Weight for masked-CE auxiliary (no extra forward)')
+    parser.add_argument('--aux_masked_ce_warmup_frac', type=float, default=None, help='Warmup fraction for masked-CE auxiliary')
     # Resume
     parser.add_argument('--resume_dir', type=str, default=None, help='Resume from latest ckpt in this directory')
     parser.add_argument('--resume_path', type=str, default=None, help='Resume from this exact ckpt path')
@@ -1752,6 +1788,12 @@ def main():
         config.surrogate_ce_frac = float(args.surrogate_ce_frac)
     if args.surrogate_ce_warmup_frac is not None:
         config.surrogate_ce_warmup_frac = float(args.surrogate_ce_warmup_frac)
+    if args.x0_update_top_k is not None:
+        config.x0_update_top_k = int(args.x0_update_top_k)
+    if args.aux_masked_ce_w is not None:
+        config.aux_masked_ce_w = float(args.aux_masked_ce_w)
+    if args.aux_masked_ce_warmup_frac is not None:
+        config.aux_masked_ce_warmup_frac = float(args.aux_masked_ce_warmup_frac)
     # WandB toggles and project
     if args.wandb:
         config.use_wandb = True

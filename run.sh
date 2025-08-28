@@ -63,6 +63,7 @@ RUN_NAME="bd3lm-speedrun-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S)"
 RESUME_DIR=""
 RESUME_PATH=""
 CE_EVAL_MODE=${CE_EVAL_MODE:-auto}
+EXTRA_ARGS=${EXTRA_ARGS:-}
 
 # Architecture toggles (override via env)
 # Efficient path (two-stream) defaults ON; flex attention stays ON unless explicitly disabled.
@@ -178,4 +179,5 @@ torchrun \
     $(if [ -n "${NOISE_REPLICAS}" ]; then echo --noise_replicas ${NOISE_REPLICAS}; fi) \
     $(if [ -n "${SAMPLE_BLOCK_COMMIT_K}" ]; then echo --sample_block_commit_k ${SAMPLE_BLOCK_COMMIT_K}; fi) \
     $(if [ -n "${GRAD_ACCUM_STEPS}" ]; then echo --grad_accum_steps ${GRAD_ACCUM_STEPS}; fi) \
+    ${EXTRA_ARGS} \
     2>&1 | tee $(if [ -n "${RESUME_DIR}${RESUME_PATH}" ]; then echo -a; fi) logs/${RUN_NAME}/train.log
