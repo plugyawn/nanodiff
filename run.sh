@@ -48,7 +48,7 @@ VAL_FILES=${VAL_FILES:-"./data/fineweb_val_*.bin"}
 VAL_TOKENS=${VAL_TOKENS:-10485760}
 MAX_STEPS=${MAX_STEPS:-}
 TRAIN_TOKENS=${TRAIN_TOKENS:-}
-OPTIMIZER=${OPTIMIZER:-mixed}  # mixed | muon | adamw
+OPTIMIZER=${OPTIMIZER:-adamw}  # adamw only
 # Optional AdamW LR override when using adamw or mixed
 ADAMW_LR=${ADAMW_LR:-}
 EVAL_INTERVAL=${EVAL_INTERVAL:-250}
@@ -56,7 +56,8 @@ SAVE_INTERVAL=${SAVE_INTERVAL:-1000}
 # Generate 1 sample per eval by default
 SAMPLES_PER_EVAL=${SAMPLES_PER_EVAL:-1}
 EVAL_CE_ONLY=${EVAL_CE_ONLY:-1}
-COMPILE=${COMPILE:-1}
+# Default: do not compile during early benches (reduces OOM risk)
+COMPILE=${COMPILE:-}
 DDP_FP16_COMPRESS=${DDP_FP16_COMPRESS:-1}
 RUN_NAME="bd3lm-speedrun-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S)"
 RESUME_DIR=""
@@ -158,7 +159,7 @@ torchrun \
     $(if [ -n "${SAMPLES_PER_EVAL}" ]; then echo --samples_per_eval ${SAMPLES_PER_EVAL}; fi) \
     $(if [ "${EVAL_CE_ONLY}" = "1" ]; then echo --eval_ce_only; fi) \
     $(if [ -n "${CE_EVAL_MODE}" ]; then echo --ce_eval_mode ${CE_EVAL_MODE}; fi) \
-    $(if [ -n "${COMPILE}" ]; then echo --compile; fi) \
+    $(if [ -n "${COMPILE}" ] && [ "${COMPILE}" = "1" ]; then echo --compile; fi) \
     $(if [ "${ACT_CKPT}" = "1" ]; then echo --activation_checkpoint; fi) \
     $(if [ "${DDP_FP16_COMPRESS}" = "1" ]; then echo --ddp_fp16_compress; fi) \
     $(if [ "${ENABLE_WANDB}" = "1" ]; then echo --wandb --project_name "${WANDB_PROJECT}"; fi) \

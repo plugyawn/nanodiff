@@ -82,7 +82,7 @@ class Config:
     max_steps: int = 125_000
     warmup_steps: int = 2500
     cooldown_frac: float = 0.45
-    optimizer: str = "mixed"  # mixed | muon | adamw
+    optimizer: str = "adamw"  # adamw only
     
     # Architecture
     use_flex_attention: bool = True
@@ -664,50 +664,16 @@ class BlockDiffusionTrainer:
         # Setup noise schedule (align with official BD3LM)
         self.noise = self._get_noise(config.noise_schedule)
         
-        # Optimizers
+        # Optimizer: pure AdamW only (no Muon)
         self.optimizer_muon = None
         self.optimizer_adam = None
-
-        if config.optimizer == "mixed":
-            # Muon for 2D params (excluding embeddings/head), AdamW for others
-            muon_params = []
-            adam_params = []
-            for name, p in model.named_parameters():
-                if (p.ndim >= 2) and (not name.startswith('token_emb')) and (not name.startswith('lm_head')):
-                    muon_params.append(p)
-                else:
-                    adam_params.append(p)
-            if len(muon_params):
-                self.optimizer_muon = Muon(
-                    muon_params,
-                    lr=config.learning_rate,
-                    weight_decay=config.weight_decay,
-                    momentum=config.momentum,
-                    compile_zeropower=config.compile_zeropower,
-                )
-            if len(adam_params):
-                self.optimizer_adam = torch.optim.AdamW(
-                    # AdamW needs a much smaller LR than Muon
-                    adam_params, lr=config.adamw_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=config.weight_decay
-                )
-        elif config.optimizer == "muon":
-            self.optimizer_muon = Muon(
-                model.parameters(),
-                lr=config.learning_rate,
-                weight_decay=config.weight_decay,
-                momentum=config.momentum,
-                compile_zeropower=config.compile_zeropower,
-            )
-        elif config.optimizer == "adamw":
-            # Prefer fused AdamW when available (CUDA builds) for faster optimizer steps
-            adamw_kwargs = dict(lr=config.adamw_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=config.weight_decay)
-            try:
-                self.optimizer_adam = torch.optim.AdamW(model.parameters(), fused=True, **adamw_kwargs)  # type: ignore[call-arg]
-            except TypeError:
-                # Fallback to non-fused on older PyTorch builds
-                self.optimizer_adam = torch.optim.AdamW(model.parameters(), **adamw_kwargs)
-        else:
-            raise ValueError(f"Unknown optimizer: {config.optimizer}")
+        if config.optimizer not in {"adamw", None}:
+            raise ValueError(f"Unsupported optimizer '{config.optimizer}'. Use adamw.")
+        adamw_kwargs = dict(lr=config.adamw_lr, betas=(0.9, 0.999), eps=1e-8, weight_decay=config.weight_decay)
+        try:
+            self.optimizer_adam = torch.optim.AdamW(model.parameters(), fused=True, **adamw_kwargs)  # type: ignore[call-arg]
+        except TypeError:
+            self.optimizer_adam = torch.optim.AdamW(model.parameters(), **adamw_kwargs)
 
         # Metrics
         self.step = 0
@@ -917,23 +883,13 @@ class BlockDiffusionTrainer:
             # Optional: blend a small CE term early on for stability
             ce_warm_frac = float(getattr(self.config, 'ce_mix_warmup_frac', 0.0) or 0.0)
             ce_max = float(getattr(self.config, 'ce_mix_max', 0.0) or 0.0)
-            if (ce_max > 0.0 and ce_warm_frac > 0.0 and self.config.max_steps > 0
-                and not getattr(self.config, 'compile_model', False)):
+            if (ce_max > 0.0 and ce_warm_frac > 0.0 and self.config.max_steps > 0):
                 step_frac = min(1.0, float(self.step) / float(self.config.max_steps))
                 if step_frac < ce_warm_frac:
                     # Linearly decay CE weight to 0 over warmup window
                     w = ce_max * (1.0 - step_frac / ce_warm_frac)
-                    # Some torch.compile + DDP builds struggle with the extra CE path; run it eager.
-                    try:
-                        import torch._dynamo as _dynamo
-                        _use_disable = True
-                    except Exception:
-                        _use_disable = False
-                    if _use_disable:
-                        with _dynamo.disable():
-                            ce_logits = self.model(x[:, :-1], sigma=None, use_bd3lm_mask=False)
-                    else:
-                        ce_logits = self.model(x[:, :-1], sigma=None, use_bd3lm_mask=False)
+                    # Compute CE logits directly (works with or without torch.compile)
+                    ce_logits = self.model(x[:, :-1], sigma=None, use_bd3lm_mask=False)
                     ce_loss = F.cross_entropy(ce_logits.reshape(-1, ce_logits.size(-1)), x[:, 1:].reshape(-1), reduction='mean')
                     return (1.0 - w) * base_loss + w * ce_loss
             return base_loss
@@ -951,8 +907,6 @@ class BlockDiffusionTrainer:
     def train_step(self, batch):
         """Single training step"""
         self.model.train()
-        if self.optimizer_muon is not None:
-            self.optimizer_muon.zero_grad(set_to_none=True)
         if self.optimizer_adam is not None:
             self.optimizer_adam.zero_grad(set_to_none=True)
 
@@ -972,10 +926,6 @@ class BlockDiffusionTrainer:
 
         scale = _lr_scale(self.step, self.config.max_steps, self.config.warmup_steps, self.config.cooldown_frac)
         # Apply scheduled LRs per optimizer family
-        if self.optimizer_muon is not None:
-            for g in self.optimizer_muon.param_groups:
-                base = self.config.learning_rate
-                g["lr"] = base * scale
         if self.optimizer_adam is not None:
             for g in self.optimizer_adam.param_groups:
                 base = self.config.adamw_lr
@@ -987,8 +937,6 @@ class BlockDiffusionTrainer:
         torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
 
         # step optimizers
-        if self.optimizer_muon is not None and len(list(self.optimizer_muon.param_groups[0]['params'])):
-            self.optimizer_muon.step()
         if self.optimizer_adam is not None and len(list(self.optimizer_adam.param_groups[0]['params'])):
             self.optimizer_adam.step()
         # Update EMA after the step
@@ -2027,20 +1975,14 @@ def main():
                 batch = train_sampler.next_batch()
                 # Scale loss inside trainer by 1/micro via manual division
                 trainer.model.train()
-                if trainer.optimizer_muon is not None:
-                    # zero grads only at outer boundary
-                    if m == 0:
-                        trainer.optimizer_muon.zero_grad(set_to_none=True)
-                if trainer.optimizer_adam is not None:
-                    if m == 0:
-                        trainer.optimizer_adam.zero_grad(set_to_none=True)
+            if trainer.optimizer_adam is not None:
+                if m == 0:
+                    trainer.optimizer_adam.zero_grad(set_to_none=True)
                 loss = trainer.compute_loss(batch) / micro
                 loss.backward()
                 accum_loss += float(loss.item())
             # clip and step once
             torch.nn.utils.clip_grad_norm_(trainer.model.parameters(), 1.0)
-            if trainer.optimizer_muon is not None and len(list(trainer.optimizer_muon.param_groups[0]['params'])):
-                trainer.optimizer_muon.step()
             if trainer.optimizer_adam is not None and len(list(trainer.optimizer_adam.param_groups[0]['params'])):
                 trainer.optimizer_adam.step()
             # EMA update and step count
