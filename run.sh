@@ -51,13 +51,29 @@ TRAIN_TOKENS=${TRAIN_TOKENS:-}
 OPTIMIZER=${OPTIMIZER:-mixed}  # mixed | muon | adamw
 # Optional AdamW LR override when using adamw or mixed
 ADAMW_LR=${ADAMW_LR:-}
-EVAL_INTERVAL=${EVAL_INTERVAL:-2000}
-SAMPLES_PER_EVAL=${SAMPLES_PER_EVAL:-0}
+EVAL_INTERVAL=${EVAL_INTERVAL:-250}
+SAVE_INTERVAL=${SAVE_INTERVAL:-1000}
+# Generate 1 sample per eval by default
+SAMPLES_PER_EVAL=${SAMPLES_PER_EVAL:-1}
+EVAL_CE_ONLY=${EVAL_CE_ONLY:-1}
 COMPILE=${COMPILE:-1}
 DDP_FP16_COMPRESS=${DDP_FP16_COMPRESS:-1}
 RUN_NAME="bd3lm-speedrun-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S)"
 RESUME_DIR=""
 RESUME_PATH=""
+
+# Architecture toggles (override via env)
+# Efficient path (two-stream) defaults ON; flex attention stays ON unless explicitly disabled.
+USE_SWIGLU=${USE_SWIGLU:-1}
+USE_LOCAL_MIXER=${USE_LOCAL_MIXER:-0}
+TIE_WEIGHTS=${TIE_WEIGHTS:-1}
+USE_FILM=${USE_FILM:-0}
+QK_LEARNED_SCALE=${QK_LEARNED_SCALE:-1}
+USE_TWO_STREAM=${USE_TWO_STREAM:-1}
+NO_FLEX_ATTN=${NO_FLEX_ATTN:-0}
+SEDD_MIX_FRAC=${SEDD_MIX_FRAC:-0.05}
+RESIDUAL_SCALE=${RESIDUAL_SCALE:-0.7071}  # ~1/sqrt(2)
+USE_PRENORM=${USE_PRENORM:-1}
 
 # If a resume flag/arg is provided, try to reuse the latest checkpoints dir
 if [ -n "$RESUME_ARG" ]; then
@@ -131,9 +147,21 @@ torchrun \
     $(if [ -n "${RESUME_DIR}" ]; then echo --resume_dir "${RESUME_DIR}"; fi) \
     $(if [ -n "${RESUME_PATH}" ]; then echo --resume_path "${RESUME_PATH}"; fi) \
     $(if [ -n "${EVAL_INTERVAL}" ]; then echo --eval_interval ${EVAL_INTERVAL}; fi) \
+    $(if [ -n "${SAVE_INTERVAL}" ]; then echo --save_interval ${SAVE_INTERVAL}; fi) \
     $(if [ -n "${SAMPLES_PER_EVAL}" ]; then echo --samples_per_eval ${SAMPLES_PER_EVAL}; fi) \
+    $(if [ "${EVAL_CE_ONLY}" = "1" ]; then echo --eval_ce_only; fi) \
     $(if [ -n "${COMPILE}" ]; then echo --compile; fi) \
     $(if [ "${DDP_FP16_COMPRESS}" = "1" ]; then echo --ddp_fp16_compress; fi) \
     $(if [ "${ENABLE_WANDB}" = "1" ]; then echo --wandb --project_name "${WANDB_PROJECT}"; fi) \
     $(if [ -n "${ADAMW_LR}" ]; then echo --adamw_lr ${ADAMW_LR}; fi) \
+    $(if [ "${USE_SWIGLU}" = "1" ]; then echo --use_swiglu; fi) \
+    $(if [ "${USE_LOCAL_MIXER}" = "1" ]; then echo --use_local_mixer; fi) \
+    $(if [ "${TIE_WEIGHTS}" = "1" ]; then echo --tie_weights; fi) \
+    $(if [ "${USE_FILM}" = "1" ]; then echo --use_film; fi) \
+    $(if [ "${QK_LEARNED_SCALE}" = "1" ]; then echo --qk_learned_scale; fi) \
+    $(if [ "${USE_TWO_STREAM}" = "1" ]; then echo --use_two_stream; fi) \
+    $(if [ "${NO_FLEX_ATTN}" = "1" ]; then echo --no_flex_attn; fi) \
+    $(if [ -n "${SEDD_MIX_FRAC}" ]; then echo --sedd_mix_frac ${SEDD_MIX_FRAC}; fi) \
+    $(if [ -n "${RESIDUAL_SCALE}" ]; then echo --residual_scale ${RESIDUAL_SCALE}; fi) \
+    $(if [ "${USE_PRENORM}" != "1" ]; then echo --no_prenorm; fi) \
     2>&1 | tee $(if [ -n "${RESUME_DIR}${RESUME_PATH}" ]; then echo -a; fi) logs/${RUN_NAME}/train.log

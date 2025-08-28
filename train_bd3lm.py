@@ -64,10 +64,10 @@ class Config:
     parameterization: str = "subs"  # subs | sedd | ar
     cross_attn: bool = True
     mdlm_loss_scale: bool = False
-    antithetic_sampling: bool = False
+    antithetic_sampling: bool = True
     sampling_eps_min: float = 1e-3
     sampling_eps_max: float = 1.0
-    eval_var_min: bool = False
+    eval_var_min: bool = True
     clip_search_widths: tuple = (0.25, 0.5, 0.75)
     first_hitting: bool = True
     
@@ -76,10 +76,10 @@ class Config:
     learning_rate: float = 0.02
     # AdamW often needs a much smaller LR; keep separate knob
     adamw_lr: float = 3e-4
-    weight_decay: float = 0.01
+    weight_decay: float = 0.0
     momentum: float = 0.95
     max_steps: int = 125_000
-    warmup_steps: int = 256
+    warmup_steps: int = 2500
     cooldown_frac: float = 0.45
     optimizer: str = "mixed"  # mixed | muon | adamw
     
@@ -88,9 +88,18 @@ class Config:
     use_rotary: bool = True
     use_qk_norm: bool = True
     use_relu_squared: bool = True
+    use_swiglu: bool = False
+    use_local_mixer: bool = False
     use_value_embeds: bool = True
     use_unet_skips: bool = True
     softcap: float = 15.0
+    use_prenorm: bool = True
+    residual_scale: float = 1.0
+    qk_learned_scale: bool = False
+    tie_weights: bool = False
+    use_film: bool = False
+    use_two_stream: bool = False
+    sedd_mix_frac: float = 0.0
     compile_model: bool = False
     compile_zeropower: bool = False
     
@@ -105,6 +114,8 @@ class Config:
     samples_per_eval: int = 1
     sample_length: int = 1024
     top_p: float = 0.95
+    # Eval behavior
+    ce_only: bool = False  # if True, skip BD3LM loss eval and only compute CE
     
     # Data (reuse NanoGPT cached FineWeb .bin shards)
     train_files: str = "./data/fineweb_train_*.bin"
@@ -275,174 +286,60 @@ class Muon(torch.optim.Optimizer):
 # -----------------------------------------------------------------------------
 # Model Components
 
-def norm(x):
-    return F.rms_norm(x, (x.size(-1),))
-
-class Rotary(nn.Module):
-    def __init__(self, dim: int, max_seq_len: int):
-        super().__init__()
-        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=dim//4, dtype=torch.float32)
-        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(dim//4)])
-        t = torch.arange(max_seq_len, dtype=torch.float32)
-        theta = torch.einsum("i,j -> ij", t, angular_freq)
-        self.cos = nn.Buffer(theta.cos(), persistent=False)
-        self.sin = nn.Buffer(theta.sin(), persistent=False)
-    
-    def forward(self, x):
-        assert self.cos.size(0) >= x.size(-3)
-        cos = self.cos[None, :x.size(-3), None, :]
-        sin = self.sin[None, :x.size(-3), None, :]
-        x1, x2 = x.to(dtype=torch.float32).chunk(2, dim=-1)
-        y1 = x1 * cos + x2 * sin
-        y2 = x1 * (-sin) + x2 * cos
-        return torch.cat((y1, y2), 3).type_as(x)
-
-def create_block_diff_mask(seq_len: int, block_size: int, device=None):
-    """Creates block diffusion mask for FlexAttention"""
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    def block_mask_fn(b, h, q_idx, kv_idx):
-        block_q = q_idx // block_size
-        block_kv = kv_idx // block_size
-        block_diagonal = (block_q == block_kv)
-        block_causal = (block_q > block_kv)
-        return block_diagonal | block_causal
-    
-    return create_block_mask(block_mask_fn, B=1, H=1, Q_LEN=seq_len, KV_LEN=seq_len, device=device)
-
-def create_bd3lm_mask(n_tokens: int, block_size: int, device=None):
-    """BD3LM 3-part mask over concatenated xt||x0 of total length 2*n.
-    Implements M_BD | M_OBC | M_BC as in the reference implementation.
-    """
-    if device is None:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    n = n_tokens
-    def block_mask_fn(b, h, q_idx, kv_idx):
-        x0_flag_q = (q_idx >= n)
-        x0_flag_kv = (kv_idx >= n)
-        block_q = torch.where(x0_flag_q == 1, (q_idx - n) // block_size, q_idx // block_size)
-        block_kv = torch.where(x0_flag_kv == 1, (kv_idx - n) // block_size, kv_idx // block_size)
-
-        block_diagonal = (block_q == block_kv) & (x0_flag_q == x0_flag_kv)
-        offset_block_causal = ((block_q > block_kv) & (x0_flag_kv == 1) & (x0_flag_q == 0))
-        block_causal = ((block_q >= block_kv) & (x0_flag_kv == 1) & (x0_flag_q == 1))
-        return block_diagonal | offset_block_causal | block_causal
-    total_len = 2 * n
-    return create_block_mask(block_mask_fn, B=1, H=1, Q_LEN=total_len, KV_LEN=total_len, device=device)
-
-class CausalSelfAttention(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        self.num_heads = config.n_heads
-        self.head_dim = config.head_dim
-        hdim = config.n_heads * config.head_dim
-        
-        # Merged QKV weights
-        self.qkvo_w = nn.Parameter(torch.empty(4, hdim, config.dim, dtype=torch.bfloat16))
-        self.qkvo_w.data[:3].normal_(std=0.5 * (config.dim ** -0.5))
-        self.qkvo_w.data[3].zero_()
-        
-        # Cross-attn concatenates xt||x0, so effective max seq length can be 2x
-        effective_max_seq_len = config.max_seq_len * (2 if config.cross_attn else 1)
-        self.rotary = Rotary(config.head_dim, effective_max_seq_len) if config.use_rotary else None
-        self.attn_scale = 0.12
-        
-        # Value embeddings
-        if config.use_value_embeds:
-            self.value_embeds = nn.Parameter(
-                torch.randn(effective_max_seq_len, hdim).bfloat16() * 0.02
-            )
-            self.lambda_v = nn.Parameter(torch.tensor([0.9, 0.1]))
-    
-    def forward(self, x, block_mask=None):
-        B, T, C = x.size()
-        x = x.to(torch.bfloat16)
-        
-        # QKV projection
-        qkv = F.linear(x, self.qkvo_w[:3].flatten(end_dim=1))
-        q, k, v = qkv.view(B, T, 3, self.num_heads, self.head_dim).unbind(2)
-        
-        # QK normalization
-        if self.config.use_qk_norm:
-            q, k = norm(q), norm(k)
-        
-        # Rotary embeddings
-        if self.rotary:
-            q = self.rotary(q)
-            k = self.rotary(k)
-        
-        # Value embeddings
-        if self.config.use_value_embeds:
-            ve = self.value_embeds[:T].view(1, T, self.num_heads, self.head_dim)
-            v = self.lambda_v[0] * v + self.lambda_v[1] * ve
-        
-        # Attention
-        if self.config.use_flex_attention and block_mask is not None:
-            if T < block_mask.shape[2]:
-                adjusted_mask = block_mask._adjust(T, T)
-            else:
-                adjusted_mask = block_mask
-            
-            y = flex_attention(
-                q.transpose(1, 2),
-                k.transpose(1, 2),
-                v.transpose(1, 2),
-                block_mask=adjusted_mask,
-                scale=self.attn_scale
-            ).transpose(1, 2)
-        else:
-            y = F.scaled_dot_product_attention(
-                q.transpose(1, 2),
-                k.transpose(1, 2),
-                v.transpose(1, 2),
-                scale=self.attn_scale,
-                is_causal=True
-            ).transpose(1, 2)
-        
-        y = y.contiguous().view(B, T, self.num_heads * self.head_dim)
-        y = F.linear(y, self.qkvo_w[3])
-        
-        return y
+from model.utils import rms_norm as norm
+from model.utils import create_block_diff_mask, create_bd3lm_mask, create_bd3lm_xt_queries_mask
+from model.layers import RMSNorm, SwiGLU, MLP as MLPFallback, FiLM
+from model.attention import CausalSelfAttention, TwoStreamTransformerBlock
 
 class MLP(nn.Module):
     def __init__(self, config):
         super().__init__()
-        hdim = 4 * config.dim
-        self.fc_w = nn.Parameter(torch.empty(hdim, config.dim, dtype=torch.bfloat16))
-        self.proj_w = nn.Parameter(torch.zeros(config.dim, hdim, dtype=torch.bfloat16))
-        self.fc_w.data.normal_(std=0.5 * (config.dim ** -0.5))
-        self.fc_w.wd_mul = 2.0
-        self.proj_w.wd_mul = 2.0
-        self.use_relu_squared = config.use_relu_squared
-    
-    def forward(self, x):
-        x = x.to(torch.bfloat16)
-        x = F.linear(x, self.fc_w)
-        if self.use_relu_squared:
-            x = F.relu(x).square()
+        if getattr(config, 'use_swiglu', False):
+            self.impl = SwiGLU(config.dim, hidden_mult=4.0, use_dwconv=getattr(config, 'use_local_mixer', False))
         else:
-            x = F.gelu(x)
-        x = F.linear(x, self.proj_w)
-        return x
+            self.impl = MLPFallback(config.dim, hidden_mult=4.0, relu_squared=config.use_relu_squared)
+
+    def forward(self, x):
+        return self.impl(x)
 
 class TransformerBlock(nn.Module):
     def __init__(self, config, layer_idx):
         super().__init__()
         self.config = config
         self.layer_idx = layer_idx
-        self.attn = CausalSelfAttention(config) if layer_idx != 7 else None
+        # attention
+        attn_max_len = config.max_seq_len * (2 if config.cross_attn else 1)
+        self.attn = CausalSelfAttention(
+            dim=config.dim,
+            n_heads=config.n_heads,
+            head_dim=config.head_dim,
+            max_seq_len=attn_max_len,
+            use_rotary=config.use_rotary,
+            use_qk_norm=config.use_qk_norm,
+            use_value_embeds=config.use_value_embeds,
+            attn_scale=0.12,
+            qk_learned_scale=getattr(config, 'qk_learned_scale', False),
+        ) if layer_idx != 7 else None
         self.mlp = MLP(config)
+        # Pre-norms
+        self.use_prenorm = getattr(config, 'use_prenorm', True)
+        if self.use_prenorm:
+            self.rms1 = RMSNorm(config.dim)
+            self.rms2 = RMSNorm(config.dim)
+        # Residual scale (stabilize deep residuals)
+        self.res_scale = getattr(config, 'residual_scale', 1.0)
     
     def forward(self, x, x0, block_mask):
         if self.attn is not None:
-            x = x + self.attn(x, block_mask)
+            h = self.rms1(x) if self.use_prenorm else x
+            x = x + self.res_scale * self.attn(h, block_mask)
         
         if self.config.use_unet_skips and x0 is not None:
             if self.layer_idx < self.config.n_layers // 2:
                 x = x + 0.1 * x0
         
-        x = x + self.mlp(x)
+        h2 = self.rms2(x) if self.use_prenorm else x
+        x = x + self.res_scale * self.mlp(h2)
         return x
 
 class BlockDiffusionLM(nn.Module):
@@ -453,29 +350,56 @@ class BlockDiffusionLM(nn.Module):
         # Include MASK token in vocabulary
         vocab_size = config.vocab_size_with_mask
         
-        # Embeddings
-        self.token_emb = nn.Embedding(vocab_size, config.dim)
+        # Embeddings (use bf16 to reduce cast/memory overhead)
+        self.token_emb = nn.Embedding(vocab_size, config.dim, dtype=torch.bfloat16)
         # Cross-attn doubles sequence length (xt||x0), expand pos embeddings accordingly
         pos_len = config.max_seq_len * (2 if config.cross_attn else 1)
-        self.pos_emb = nn.Embedding(pos_len, config.dim)
+        self.pos_emb = nn.Embedding(pos_len, config.dim, dtype=torch.bfloat16)
         
         # Time embedding for diffusion (condition on sigma)
         self.time_emb = nn.Sequential(
-            nn.Linear(1, config.dim),
+            nn.Linear(1, config.dim, dtype=torch.bfloat16),
             nn.SiLU(),
-            nn.Linear(config.dim, config.dim)
+            nn.Linear(config.dim, config.dim, dtype=torch.bfloat16)
         )
         
         # Transformer blocks
-        self.blocks = nn.ModuleList([
-            TransformerBlock(config, i) for i in range(config.n_layers)
-        ])
+        if getattr(config, 'use_two_stream', False):
+            attn_len = config.max_seq_len * (2 if config.cross_attn else 1)
+            self.ts_blocks = nn.ModuleList([
+                TwoStreamTransformerBlock(
+                    dim=config.dim,
+                    n_heads=config.n_heads,
+                    head_dim=config.head_dim,
+                    max_seq_len=attn_len,
+                    use_rotary=config.use_rotary,
+                    use_qk_norm=config.use_qk_norm,
+                    use_value_embeds=False,
+                    attn_scale=0.12,
+                    qk_learned_scale=getattr(config, 'qk_learned_scale', False),
+                    use_swiglu=getattr(config, 'use_swiglu', False),
+                    use_local_mixer=getattr(config, 'use_local_mixer', False),
+                    residual_scale=getattr(config, 'residual_scale', 1.0),
+                    use_prenorm=getattr(config, 'use_prenorm', True),
+                )
+                for _ in range(config.n_layers)
+            ])
+        else:
+            self.blocks = nn.ModuleList([
+                TransformerBlock(config, i) for i in range(config.n_layers)
+            ])
         
         # Output
-        self.ln_f = nn.LayerNorm(config.dim)
-        self.lm_head = nn.Linear(config.dim, vocab_size, bias=False)
-        with torch.no_grad():
-            self.lm_head.weight.zero_()  # zero-init head
+        # Keep normalization and projection dtypes consistent with bf16 activations
+        self.ln_f = nn.LayerNorm(config.dim, dtype=torch.bfloat16)
+        # Project in bf16 to match preceding activations and avoid dtype mismatch
+        self.lm_head = nn.Linear(config.dim, vocab_size, bias=False, dtype=torch.bfloat16)
+        if getattr(config, 'tie_weights', False):
+            # Tie with token embeddings
+            self.lm_head.weight = self.token_emb.weight
+        else:
+            with torch.no_grad():
+                self.lm_head.weight.zero_()  # zero-init head
         
         # Block mask for attention
         if config.use_flex_attention:
@@ -484,9 +408,12 @@ class BlockDiffusionLM(nn.Module):
             self.block_mask = create_block_diff_mask(config.max_seq_len, config.block_size, device=module_device)
             # prebuild BD3LM mask for xt||x0 (total length = 2 * max_seq_len)
             self.bd3lm_mask = create_bd3lm_mask(config.max_seq_len, config.block_size, device=module_device)
+            # two-stream: queries=xt (len n), kv=xt||x0 (len 2n)
+            self.bd3lm_ts_mask = create_bd3lm_xt_queries_mask(config.max_seq_len, config.block_size, device=module_device)
         else:
             self.block_mask = None
             self.bd3lm_mask = None
+            self.bd3lm_ts_mask = None
 
         # Learnable gating for UNet-like skips
         assert config.n_layers % 2 == 0
@@ -515,47 +442,109 @@ class BlockDiffusionLM(nn.Module):
         pos_emb = self.pos_emb(pos)
         x = (tok_emb + pos_emb).to(torch.bfloat16)
         
-        # Sigma conditioning embedding
+        # Sigma conditioning: per-token additive on xt (when provided),
+        # fallback to sequence-wise FiLM or additive for scalar sigma.
+        film = None
         if sigma is not None:
-            # Map per-example sigma (B,1) to a time embedding (B,1,dim)
-            # and broadcast across the sequence length T.
-            s = sigma.float().unsqueeze(-1)  # (B,1,1)
-            t_emb = self.time_emb(s)         # (B,1,dim)
-            x = x + t_emb                    # broadcasts to (B,T,dim)
+            # Support sigma as (B,), (B,1), (B,T), or (B,2T)
+            sig = sigma
+            if isinstance(sig, torch.Tensor) and sig.dim() == 1:
+                sig = sig.unsqueeze(1)
+            # If per-token sigma was provided, prefer additive time embedding per position.
+            if isinstance(sig, torch.Tensor) and sig.dim() == 2 and sig.size(1) > 1:
+                # Shape (B, L) where L == T (no-CA) or 2T (CA). Embed to (B,L,D)
+                s = sig.to(x.dtype).unsqueeze(-1)
+                t_full = self.time_emb(s).to(x.dtype)
+                if use_bd3lm_mask:
+                    # Apply only to xt half (first n tokens)
+                    n_tok = t_full.size(1) // 2
+                    x[:, :n_tok, :] = x[:, :n_tok, :] + t_full[:, :n_tok, :]
+                else:
+                    # Non-CA path: inputs are xt only, apply everywhere
+                    x = x + t_full
+            else:
+                # Scalar sigma per example: allow FiLM or additive sequence-wise
+                s = sig.to(x.dtype).unsqueeze(-1)  # (B,1,1)
+                t_emb = self.time_emb(s).to(x.dtype)  # (B,1,dim)
+                if getattr(self.config, 'use_film', False):
+                    # Map (B,1,dim) -> (B,dim)
+                    t_vec = t_emb.squeeze(1)
+                    if not hasattr(self, 'film'):
+                        from model.layers import FiLM as _FiLM
+                        self.film = _FiLM(self.config.dim)
+                    gamma, beta = self.film(t_vec)
+                    film = (gamma.to(x.dtype).unsqueeze(1), beta.to(x.dtype).unsqueeze(1))
+                else:
+                    # Always add sequence-wise embedding in scalar-sigma case
+                    x = x + t_emb
         
         x0 = x if self.config.use_unet_skips else None
         
         # Transformer blocks
-        # Select appropriate mask
-        if self.config.use_flex_attention:
-            attn_mask = self.bd3lm_mask if use_bd3lm_mask else self.block_mask
-            # Ensure the attention mask matches the current sequence length T.
-            # Torch's BlockMask._adjust is unreliable across versions; rebuild when sizes differ.
-            T_eff = x.size(1)
-            if attn_mask is not None:
-                mask_len = attn_mask.shape[2]
-                if T_eff != mask_len:
-                    if use_bd3lm_mask:
-                        # x is xt||x0, so n_tokens is half the effective length
-                        n_tok = max(1, T_eff // 2)
-                        attn_mask = create_bd3lm_mask(n_tok, self.config.block_size, device=device)
-                    else:
-                        attn_mask = create_block_diff_mask(T_eff, self.config.block_size, device=device)
-        else:
-            attn_mask = None
-
-        # U-Net style skip connections with gating
-        n = len(self.blocks) // 2
-        skips = []
-        for i, block in enumerate(self.blocks):
-            x = block(x, x0, attn_mask)
-            if i < n:
-                skips.append(x)
+        if getattr(self.config, 'use_two_stream', False):
+            # Two-stream path supports both BD3LM (xt||x0) and single-stream CE eval.
+            if use_bd3lm_mask:
+                # Input is xt||x0; split evenly
+                total_T = x.size(1)
+                n_tok = total_T // 2
+                xt = x[:, :n_tok, :]
+                x0e = x[:, n_tok:, :]
+                # Regenerate a matching two-stream mask for current length
+                ts_mask = create_bd3lm_xt_queries_mask(n_tok, self.config.block_size, device=device) if self.config.use_flex_attention else None
             else:
-                x = x + self.skip_weights[i - n] * skips.pop()
+                # Single-stream inputs: reuse two-stream blocks by setting xt=x and x0=x
+                # and using a two-stream mask that yields block-causal behavior.
+                xt = x
+                x0e = x
+                ts_mask = create_bd3lm_xt_queries_mask(x.size(1), self.config.block_size, device=device) if self.config.use_flex_attention else None
+
+            # U-Net style skip connections with gating on xt stream
+            n_half = len(self.ts_blocks) // 2
+            skips = []
+            for i, block in enumerate(self.ts_blocks):
+                # Apply FiLM to residual stream pre-block if enabled
+                if film is not None and getattr(self.config, 'use_film', False):
+                    gamma, beta = film
+                    xt = gamma * xt + beta
+                xt = block(xt, x0e, block_mask=ts_mask)
+                if i < n_half:
+                    skips.append(xt)
+                else:
+                    xt = xt + self.skip_weights[i - n_half] * skips.pop()
+            x = xt
+        else:
+            # Single-stream path (original)
+            if self.config.use_flex_attention:
+                attn_mask = self.bd3lm_mask if use_bd3lm_mask else self.block_mask
+                T_eff = x.size(1)
+                if attn_mask is not None:
+                    mask_len = attn_mask.shape[2]
+                    if use_bd3lm_mask:
+                        n_tok = max(1, T_eff // 2)
+                        if mask_len != (2 * n_tok):
+                            attn_mask = create_bd3lm_mask(n_tok, self.config.block_size, device=device)
+                    else:
+                        if mask_len != T_eff:
+                            attn_mask = create_block_diff_mask(T_eff, self.config.block_size, device=device)
+            else:
+                attn_mask = None
+
+            n = len(self.blocks) // 2
+            skips = []
+            for i, block in enumerate(self.blocks):
+                if film is not None and getattr(self.config, 'use_film', False):
+                    gamma, beta = film
+                    x = gamma * x + beta
+                x = block(x, x0, attn_mask)
+                if i < n:
+                    skips.append(x)
+                else:
+                    x = x + self.skip_weights[i - n] * skips.pop()
         
         # Output
         x = self.ln_f(x)
+        # Some PyTorch builds may upcast LayerNorm internally; enforce bf16 before linear
+        x = x.to(torch.bfloat16)
         logits = self.lm_head(x)
         
         if self.config.softcap > 0:
@@ -734,7 +723,8 @@ class BlockDiffusionTrainer:
             if not bad.any():
                 break
             regen_idx = bad.repeat_interleave(bs, dim=-1)
-            move[regen_idx] = (torch.rand_like(move) <= p)[regen_idx]
+            # rand_like on a bool tensor is invalid; sample floats then compare
+            move[regen_idx] = (torch.rand(move.shape, device=move.device) <= p)[regen_idx]
             xt = torch.where(move, self.mask_token_id, x)
             xt_blocks = xt.view(B, num_blocks, bs)
         return xt
@@ -751,7 +741,7 @@ class BlockDiffusionTrainer:
             xt = self._resample_bounds(x, xt, move, p, self.config.block_size, eps_min, eps_max)
         return xt
     
-    def compute_loss(self, x):
+    def compute_loss(self, x, eps_min: Optional[float] = None, eps_max: Optional[float] = None):
         """Compute BD3LM objective according to parameterization."""
         B, T = x.shape
         device = x.device
@@ -767,8 +757,9 @@ class BlockDiffusionTrainer:
         # sample per-block times and get noise schedule terms
         t = self._sample_t(B, T, device)  # (B,T)
         loss_scale, move_chance = self.noise(t)
-        # compute sigma (per-example mean over tokens)
-        sigma = self._sigma_from_p(move_chance.mean(dim=1, keepdim=True), getattr(self.noise, 'sigma_max', None))
+        # compute sigma per-token for conditioning, and per-example for loss scale terms
+        sigma_tok = self._sigma_from_p(move_chance, getattr(self.noise, 'sigma_max', None))  # (B,T)
+        sigma = self._sigma_from_p(move_chance.mean(dim=1, keepdim=True), getattr(self.noise, 'sigma_max', None))  # (B,1)
 
         # optional MDLM loss-scale override
         if self.config.mdlm_loss_scale:
@@ -778,28 +769,43 @@ class BlockDiffusionTrainer:
             move_chance = 1 - torch.exp(-sigma)
             loss_scale = - (dsigma / torch.expm1(sigma))
 
-        # corrupt tokens
-        xt = self.corrupt_tokens(x, move_chance, self.config.sampling_eps_min, self.config.sampling_eps_max)
+        # corrupt tokens (allow temporary override for schedule clipping)
+        use_eps_min = self.config.sampling_eps_min if eps_min is None else eps_min
+        use_eps_max = self.config.sampling_eps_max if eps_max is None else eps_max
+        xt = self.corrupt_tokens(x, move_chance, use_eps_min, use_eps_max)
 
         # model forward: if cross_attn, feed xt||x0 and use 3-part mask
         if self.config.cross_attn:
             x_input = torch.cat([xt, x], dim=1)
-            logits = self.model(x_input, sigma, use_bd3lm_mask=True)
-            # decode from xt queries (first T positions), per paper
-            logits = logits[:, :T]
+            # Provide per-token sigma on xt positions only (zeros for x0)
+            sigma_in = torch.cat([sigma_tok, torch.zeros_like(sigma_tok)], dim=1)
+            logits = self.model(x_input, sigma_in, use_bd3lm_mask=True)
+            # decode from xt queries; two-stream path returns only xt logits
+            if not getattr(self.config, 'use_two_stream', False):
+                logits = logits[:, :T]
         else:
-            logits = self.model(xt, sigma)
+            # Non-CA path: inputs are xt only; provide per-token sigma
+            logits = self.model(xt, sigma_tok)
 
         if self.config.parameterization == 'subs':
+            # SUBS primary objective; optionally mix in SEDD for calibration
             log_probs = self._subs_parameterization(logits, xt)
             log_p_theta = torch.gather(log_probs, dim=-1, index=x.unsqueeze(-1)).squeeze(-1)
             masked = (xt == self.mask_token_id)
-            # ensure there is at least one masked token per batch
             num_masked = int(masked.sum().item())
             assert num_masked > 0, "No masked tokens in batch; adjust noise schedule"
             loss_mat = loss_scale * log_p_theta * masked.float()
-            loss = loss_mat.sum() / num_masked
-            return loss
+            loss_subs = loss_mat.sum() / num_masked
+
+            mix = float(getattr(self.config, 'sedd_mix_frac', 0.0) or 0.0)
+            if mix > 0.0:
+                dsigma = - loss_scale * torch.expm1(sigma)
+                log_score = logits - torch.logsumexp(logits, dim=-1, keepdim=True)
+                loss_sedd_mat = self._score_entropy(log_score, sigma, xt, x)
+                loss_sedd = (dsigma.squeeze(-1)[:, None] * loss_sedd_mat).sum() / (B * T)
+                return (1.0 - mix) * loss_subs + mix * loss_sedd
+            else:
+                return loss_subs
         elif self.config.parameterization == 'sedd':
             # compute dsigma as in reference
             # use dsigma = -loss_scale * expm1(sigma)
@@ -968,7 +974,8 @@ class BlockDiffusionTrainer:
                 # build input as xt||x0 as in training when cross_attn
                 x_in = torch.cat([xt, x0], dim=1)
                 logits = model(x_in, sigma, use_bd3lm_mask=True)
-                logits = logits[:, :T]  # decode xt half
+                if not getattr(self.config, 'use_two_stream', False):
+                    logits = logits[:, :T]  # decode xt half
                 block_logits = logits[:, start:end]
                 probs = block_logits.float().softmax(dim=-1)
                 # Disallow MASK and ids beyond GPT-2 vocab
@@ -1004,6 +1011,8 @@ class BlockDiffusionTrainer:
     def generate_and_save_samples(self, model, out_dir: Path, rank: int = 0):
         if rank != 0:
             return
+        was_training = model.training
+        model.eval()
         out_dir.mkdir(parents=True, exist_ok=True)
         num = self.config.samples_per_eval
         length = min(self.config.sample_length, self.config.max_seq_len)
@@ -1038,6 +1047,9 @@ class BlockDiffusionTrainer:
             tex_path.write_text(latex)
         except Exception as e:
             print(f"[warn] Failed to write samples to {tex_path}: {e}")
+        finally:
+            if was_training:
+                model.train()
 
 # -----------------------------------------------------------------------------
 # Data: NanoGPT cached FineWeb .bin reader (distributed)
@@ -1110,8 +1122,30 @@ class FineWebBinSampler:
             starts = torch.randint(0, max_start, (self.local_batch_size,))
         # assemble batch
         batch_list = [self.tokens[s.item(): s.item() + self.seq_len] for s in starts]
-        batch = torch.stack(batch_list)  # uint16 on pinned CPU
+        batch = torch.stack(batch_list)  # uint16 CPU tensor (may not be pinned yet)
+        # Ensure pinned memory for asynchronous H2D copies when using CUDA
+        if torch.device(self.device).type == 'cuda':
+            batch = batch.pin_memory()
         return batch.to(device=self.device, dtype=torch.int64, non_blocking=True)
+
+    def next_batch_pinned(self) -> torch.Tensor:
+        """Return a CPU batch (uint16) pinned in memory for async H2D copy.
+        The caller is responsible for moving to device/dtype.
+        """
+        if self.align_to_bos and (self.boundaries is None or len(self.boundaries) == 0):
+            self._load_next_file()
+        if self.align_to_bos and len(self.boundaries) >= self.local_batch_size:
+            idx = torch.randint(0, len(self.boundaries), (self.local_batch_size,))
+            starts = self.boundaries[idx]
+        else:
+            max_start = len(self.tokens) - self.seq_len - 1
+            if max_start <= 0:
+                self._load_next_file()
+                return self.next_batch_pinned()
+            starts = torch.randint(0, max_start, (self.local_batch_size,))
+        batch_list = [self.tokens[s.item(): s.item() + self.seq_len] for s in starts]
+        batch = torch.stack(batch_list)  # uint16 CPU
+        return batch.pin_memory()
 
 def build_sampler(filename_pattern: str, batch_size: int, seq_len: int, device: torch.device, align_to_bos: bool):
     world_size = dist.get_world_size() if dist.is_initialized() else 1
@@ -1122,29 +1156,210 @@ def build_sampler(filename_pattern: str, batch_size: int, seq_len: int, device: 
     show_progress = (rank == 0)
     return FineWebBinSampler(filename_pattern, seq_len, local_bs, device, align_to_bos, show_progress=show_progress)
 
+class PrefetchingSampler:
+    """Wrap a sampler to overlap CPU batch prep and H2D copies using a
+    dedicated CUDA stream. Falls back to direct path on CPU.
+    """
+    def __init__(self, base: FineWebBinSampler, device: torch.device):
+        self.base = base
+        self.device = torch.device(device)
+        self._prefetched = None
+        if self.device.type == 'cuda':
+            self._stream = torch.cuda.Stream(device=self.device)
+        else:
+            self._stream = None
+        # Prime first batch
+        self._enqueue()
+
+    def _enqueue(self):
+        if self._stream is None:
+            # CPU path: just prepare synchronously as int64 on CPU
+            self._prefetched = self.base.next_batch()
+            return
+        with torch.cuda.stream(self._stream):
+            try:
+                cpu_batch = self.base.next_batch_pinned()
+            except AttributeError:
+                # Fallback for older base impls; schedule copy within this stream
+                self._prefetched = self.base.next_batch()
+                return
+            self._prefetched = cpu_batch.to(device=self.device, dtype=torch.int64, non_blocking=True)
+
+    def next_batch(self) -> torch.Tensor:
+        if self._stream is not None:
+            # Make current stream wait for the prefetch stream
+            torch.cuda.current_stream(device=self.device).wait_stream(self._stream)
+            out = self._prefetched
+            # Immediately start preparing the next batch
+            self._enqueue()
+            return out
+        # CPU path
+        out = self._prefetched
+        self._enqueue()
+        return out
+
 @torch.no_grad()
 def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: FineWebBinSampler, rank: int, world_size: int):
-    # Number of local steps so that total across ranks ~= val_tokens
-    # Each step across all ranks processes (global) batch_size * seq_len tokens.
+    """Evaluate validation losses.
+
+    Returns a dict with:
+    - 'bd3lm': the current training objective (SUBS/SEDD) averaged over tokens
+    - 'ce': NanoGPT-style mean next-token cross-entropy on FineWeb
+
+    If eval_var_min is enabled, SUBS/SEDD loss uses variance-min clipping sweep
+    to choose eps_min; CE is computed once per batch and averaged.
+    """
     tokens_per_step_global = config.batch_size * config.max_seq_len
     steps = max(1, math.ceil(config.val_tokens / tokens_per_step_global))
-    total_loss = torch.tensor(0.0, device=trainer.device)
-    total_tokens = torch.tensor(0.0, device=trainer.device)
-    pbar = tqdm(total=steps, desc="Eval", disable=(rank != 0), leave=False)
-    for _ in range(steps):
-        batch = sampler.next_batch()
-        loss = trainer.compute_loss(batch)
-        toks = torch.tensor(batch.numel(), device=trainer.device, dtype=torch.float32)
-        total_loss += loss * toks
-        total_tokens += toks
-        pbar.update(1)
+
+    # Always use inference mode to avoid autograd overhead and torch.compile graph churn
+    # Preserve/restore model training mode around eval
+    model = trainer.model
+    was_training = model.training
+    model.eval()
+    # Use bfloat16 autocast for faster matmuls if CUDA is available
+    # torch.cuda.amp.autocast is deprecated; use torch.amp.autocast('cuda', ...)
+    amp_ctx = torch.amp.autocast('cuda', enabled=torch.cuda.is_available(), dtype=torch.bfloat16)
+
+    # Fast path: CE-only evaluation (user cares about CE)
+    if getattr(config, 'ce_only', False):
+        total_ce = torch.tensor(0.0, device=trainer.device)
+        total_ce_tokens = torch.tensor(0.0, device=trainer.device)
+        pbar = tqdm(total=steps, desc="Eval(CE)", disable=(rank != 0), leave=False)
+        with amp_ctx, torch.inference_mode():
+            for _ in range(steps):
+                batch = sampler.next_batch()
+                # Keep sequence length equal to training to avoid recompiles; slice logits for CE
+                logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
+                ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
+                total_ce += ce * batch[:, 1:].numel()
+                total_ce_tokens += torch.tensor(float(batch[:, 1:].numel()), device=trainer.device)
+                pbar.update(1)
+        pbar.close()
+        if world_size > 1:
+            dist.all_reduce(total_ce, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_ce_tokens, op=dist.ReduceOp.SUM)
+        # restore training state
+        if was_training:
+            model.train()
+        return {
+            'bd3lm': None,
+            'ce': (total_ce / torch.clamp_min(total_ce_tokens, 1.0)).item(),
+        }
+
+    if not config.eval_var_min:
+        total_loss = torch.tensor(0.0, device=trainer.device)
+        total_tokens = torch.tensor(0.0, device=trainer.device)
+        total_ce = torch.tensor(0.0, device=trainer.device)
+        total_ce_tokens = torch.tensor(0.0, device=trainer.device)
+        pbar = tqdm(total=steps, desc="Eval", disable=(rank != 0), leave=False)
+        with amp_ctx, torch.inference_mode():
+            for _ in range(steps):
+                batch = sampler.next_batch()
+                loss = trainer.compute_loss(batch)
+                toks = torch.tensor(batch.numel(), device=trainer.device, dtype=torch.float32)
+                total_loss += loss * toks
+                total_tokens += toks
+                # NanoGPT-style CE on the same batch (keep input length equal to training)
+                logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
+                ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
+                total_ce += ce * (batch.size(0) * (batch.size(1) - 1))
+                total_ce_tokens += torch.tensor(float(batch.size(0) * (batch.size(1) - 1)), device=trainer.device)
+                pbar.update(1)
+        pbar.close()
+        if world_size > 1:
+            dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_ce, op=dist.ReduceOp.SUM)
+            dist.all_reduce(total_ce_tokens, op=dist.ReduceOp.SUM)
+        # restore training state
+        if was_training:
+            model.train()
+        return {
+            'bd3lm': (total_loss / total_tokens).item(),
+            'ce': (total_ce / total_ce_tokens).item(),
+        }
+
+    # var_min-enabled path
+    candidates = list(config.clip_search_widths) if len(config.clip_search_widths) else [0.25, 0.5, 0.75]
+    # losses_by_c[c] stores list of per-batch average losses at clipping (c, 1.0)
+    losses_by_c = {c: [] for c in candidates}
+    pbar = tqdm(total=steps, desc="Eval(var_min)", disable=(rank != 0), leave=False)
+    ce_accum = torch.tensor(0.0, device=trainer.device)
+    ce_tokens = torch.tensor(0.0, device=trainer.device)
+    with amp_ctx, torch.inference_mode():
+        for _ in range(steps):
+            batch = sampler.next_batch()
+            for c in candidates:
+                loss_c = trainer.compute_loss(batch, eps_min=float(c), eps_max=1.0)
+                # store python float to keep small and all-reduce later
+                losses_by_c[c].append(float(loss_c))
+            # Also accumulate NanoGPT-style CE per batch once (keep input length equal to training)
+            logits = trainer.model(batch, sigma=None, use_bd3lm_mask=False)
+            ce = F.cross_entropy(logits[:, :-1, :].reshape(-1, logits.size(-1)), batch[:, 1:].reshape(-1), reduction='mean')
+            ce_accum += ce * (batch.size(0) * (batch.size(1) - 1))
+            ce_tokens += torch.tensor(float(batch.size(0) * (batch.size(1) - 1)), device=trainer.device)
+            pbar.update(1)
     pbar.close()
-    # reduce across ranks
+
+    # Stack into tensors and all-reduce means/variances across ranks
+    best_c = None
+    best_var = None
+    best_mean = None
+    for c in candidates:
+        local_losses = torch.tensor(losses_by_c[c], device=trainer.device, dtype=torch.float32)
+        if world_size > 1:
+            # compute mean and mean of squares across ranks for variance
+            local_sum = local_losses.sum()
+            local_sq_sum = (local_losses ** 2).sum()
+            local_count = torch.tensor(float(local_losses.numel()), device=trainer.device)
+            dist.all_reduce(local_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(local_sq_sum, op=dist.ReduceOp.SUM)
+            dist.all_reduce(local_count, op=dist.ReduceOp.SUM)
+            mean = (local_sum / local_count)
+            var = (local_sq_sum / local_count) - mean ** 2
+        else:
+            mean = local_losses.mean() if local_losses.numel() > 0 else torch.tensor(float('inf'), device=trainer.device)
+            var = local_losses.var(unbiased=False) if local_losses.numel() > 1 else torch.tensor(float('inf'), device=trainer.device)
+
+        # choose by minimal variance; break ties by mean
+        if best_var is None or var.item() < best_var or (math.isclose(var.item(), best_var, rel_tol=1e-3) and mean.item() < best_mean):
+            best_var = var.item()
+            best_mean = mean.item()
+            best_c = c
+
+    # adopt the chosen clipping interval for training
+    if best_c is not None:
+        # only rank 0 prints decision
+        if rank == 0:
+            print(f"[var_min] chosen eps_min={best_c:.2f}, var={best_var:.6g}, mean={best_mean:.6g}")
+        config.sampling_eps_min = float(best_c)
+        # keep max at 1.0
+        config.sampling_eps_max = 1.0
+
+    # Return the average loss under the chosen clipping
+    chosen_losses = torch.tensor(losses_by_c[best_c], device=trainer.device, dtype=torch.float32)
     if world_size > 1:
-        dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
-        dist.all_reduce(total_tokens, op=dist.ReduceOp.SUM)
-    avg_loss = (total_loss / total_tokens).item()
-    return avg_loss
+        chosen_sum = chosen_losses.sum()
+        chosen_count = torch.tensor(float(chosen_losses.numel()), device=trainer.device)
+        dist.all_reduce(chosen_sum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(chosen_count, op=dist.ReduceOp.SUM)
+        dist.all_reduce(ce_accum, op=dist.ReduceOp.SUM)
+        dist.all_reduce(ce_tokens, op=dist.ReduceOp.SUM)
+        # restore training state
+        if was_training:
+            model.train()
+        return {
+            'bd3lm': (chosen_sum / chosen_count).item(),
+            'ce': (ce_accum / ce_tokens).item(),
+        }
+    # restore training state
+    if was_training:
+        model.train()
+    return {
+        'bd3lm': (chosen_losses.mean() if chosen_losses.numel() > 0 else torch.tensor(float('inf'), device=trainer.device)).item(),
+        'ce': (ce_accum / torch.clamp_min(ce_tokens, 1.0)).item(),
+    }
 
 # -----------------------------------------------------------------------------
 # Main
@@ -1171,10 +1386,21 @@ def main():
     parser.add_argument('--samples_per_eval', type=int, default=None, help='How many samples to generate at eval time')
     parser.add_argument('--sample_length', type=int, default=None, help='Sample length for generation')
     parser.add_argument('--top_p', type=float, default=None, help='Nucleus sampling top-p')
+    parser.add_argument('--eval_ce_only', action='store_true', help='Eval only CE (skip BD3LM loss/var-min)')
     parser.add_argument('--compile', action='store_true', help='torch.compile the model forward pass')
     parser.add_argument('--ddp_fp16_compress', action='store_true', help='Compress gradients to FP16 during DDP all-reduce')
     parser.add_argument('--max_steps', type=int, default=None, help='Override total training steps')
     parser.add_argument('--train_tokens', type=int, default=None, help='Target total training tokens; derives max_steps = ceil(train_tokens / (global_batch * seq_len))')
+    # Architecture knobs
+    parser.add_argument('--use_swiglu', action='store_true', help='Use SwiGLU MLP')
+    parser.add_argument('--use_local_mixer', action='store_true', help='Add depthwise conv mixer in MLP')
+    parser.add_argument('--tie_weights', action='store_true', help='Tie lm_head to token_emb')
+    parser.add_argument('--use_film', action='store_true', help='Use FiLM conditioning from sigma in SUBS')
+    parser.add_argument('--qk_learned_scale', action='store_true', help='Learned per-head scale on Q/K')
+    parser.add_argument('--use_two_stream', action='store_true', help='Use two-stream attention for xt queries into xt||x0 keys')
+    parser.add_argument('--sedd_mix_frac', type=float, default=None, help='Blend SEDD loss into SUBS with this fraction')
+    parser.add_argument('--residual_scale', type=float, default=None, help='Residual branch scale factor')
+    parser.add_argument('--no_prenorm', action='store_true', help='Disable pre-norm in transformer blocks')
     # Resume
     parser.add_argument('--resume_dir', type=str, default=None, help='Resume from latest ckpt in this directory')
     parser.add_argument('--resume_path', type=str, default=None, help='Resume from this exact ckpt path')
@@ -1223,6 +1449,27 @@ def main():
         config.sample_length = args.sample_length
     if args.top_p is not None:
         config.top_p = args.top_p
+    if args.eval_ce_only:
+        config.ce_only = True
+    # Arch flags
+    if args.use_swiglu:
+        config.use_swiglu = True
+    if args.use_local_mixer:
+        config.use_local_mixer = True
+    if args.tie_weights:
+        config.tie_weights = True
+    if args.use_film:
+        config.use_film = True
+    if args.qk_learned_scale:
+        config.qk_learned_scale = True
+    if args.use_two_stream:
+        config.use_two_stream = True
+    if args.sedd_mix_frac is not None:
+        config.sedd_mix_frac = float(args.sedd_mix_frac)
+    if args.residual_scale is not None:
+        config.residual_scale = float(args.residual_scale)
+    if args.no_prenorm:
+        config.use_prenorm = False
     # WandB toggles and project
     if args.wandb:
         config.use_wandb = True
@@ -1348,6 +1595,29 @@ def main():
         trainer_step_from_ckpt = 0
 
     # Optional compilation happens after successful load
+    # Workaround: some inductor pointwise kernels (e.g., fused div/mul/tanh over large tensors)
+    # request a Triton XBLOCK larger than the default 4096, triggering
+    # "increase TRITON_MAX_BLOCK['X'] to ..." assertions during torch.compile/inductor.
+    # Bump the runtime limit conservatively to 8192 before compiling the model.
+    try:
+        import torch._inductor.runtime.hints as _ind_hints  # type: ignore
+        if isinstance(_ind_hints.TRITON_MAX_BLOCK, dict):
+            _ind_hints.TRITON_MAX_BLOCK["X"] = max(_ind_hints.TRITON_MAX_BLOCK.get("X", 4096), 8192)
+        # Also update the reference in triton_heuristics (same dict object in-process, but be explicit)
+        import torch._inductor.runtime.triton_heuristics as _ind_th  # type: ignore
+        if isinstance(getattr(_ind_th, 'TRITON_MAX_BLOCK', None), dict):
+            _ind_th.TRITON_MAX_BLOCK["X"] = max(_ind_th.TRITON_MAX_BLOCK.get("X", 4096), 8192)
+    except Exception:
+        pass
+
+    # Ensure Triton kernels compile in-process so the above override is visible
+    # (Inductor normally uses subprocess workers; setting threads=1 disables that path.)
+    os.environ.setdefault("TORCHINDUCTOR_COMPILE_THREADS", "1")
+    try:
+        import torch._inductor.config as _ind_cfg  # type: ignore
+        _ind_cfg.compile_threads = 1
+    except Exception:
+        pass
     if config.compile_model and not args.test:
         try:
             if rank == 0:
@@ -1450,20 +1720,27 @@ def main():
         trainer.ckpt_dir = ckpt_dir
         if rank == 0:
             print(f"Using data: {config.train_files}")
-        train_sampler = build_sampler(
+        base_train_sampler = build_sampler(
             filename_pattern=config.train_files,
             batch_size=config.batch_size,
             seq_len=config.max_seq_len,
             device=torch.device(config.device),
             align_to_bos=config.align_to_bos,
         )
-        val_sampler = build_sampler(
+        base_val_sampler = build_sampler(
             filename_pattern=config.val_files,
             batch_size=config.batch_size,
             seq_len=config.max_seq_len,
             device=torch.device(config.device),
             align_to_bos=True,
         )
+        # Wrap with CUDA prefetch to overlap H2D copies with compute
+        if torch.device(config.device).type == 'cuda':
+            train_sampler = PrefetchingSampler(base_train_sampler, torch.device(config.device))
+            val_sampler = PrefetchingSampler(base_val_sampler, torch.device(config.device))
+        else:
+            train_sampler = base_train_sampler
+            val_sampler = base_val_sampler
         running_loss = 0
         log_time = time.time()
         
@@ -1500,12 +1777,19 @@ def main():
                 log_time = time.time()
 
             if (config.eval_interval > 0) and (config.val_tokens > 0) and (trainer.step % config.eval_interval == 0):
-                val_loss = evaluate_val_loss(trainer, config, val_sampler, rank, world_size)
+                val_metrics = evaluate_val_loss(trainer, config, val_sampler, rank, world_size)
                 if rank == 0:
-                    print(f"Eval step {trainer.step}: val_loss_subs = {val_loss:.4f}")
+                    ce_val = val_metrics.get('ce', None)
+                    bd3lm_val = val_metrics.get('bd3lm', None)
+                    val_ppl = math.exp(ce_val) if (ce_val is not None and not math.isinf(ce_val)) else float('inf')
+                    ce_str = f"{ce_val:.4f}" if (ce_val is not None and not math.isinf(ce_val)) else "N/A"
+                    bd3lm_str = f"{bd3lm_val:.4f}" if (bd3lm_val is not None and not math.isinf(bd3lm_val)) else "N/A"
+                    print(f"Eval step {trainer.step}: val_loss_subs = {bd3lm_str} | val_loss_ce = {ce_str} | val_ppl = {val_ppl:.2f}")
                     if config.use_wandb:
                         wandb.log({
-                            "val_loss_subs": val_loss,
+                            "val_loss_subs": val_metrics['bd3lm'],
+                            "val_loss_ce": val_metrics['ce'],
+                            "val_ppl": val_ppl,
                             "step": trainer.step
                         })
                     # Generate and write sample rollouts (optional)
