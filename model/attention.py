@@ -168,12 +168,12 @@ class TwoStreamBlock(nn.Module):
             self.q_scale = nn.Parameter(torch.ones(n_heads, 1, 1, dtype=torch.bfloat16))
             self.k_scale = nn.Parameter(torch.ones(n_heads, 1, 1, dtype=torch.bfloat16))
 
-    def forward(self, xt: torch.Tensor, x0: torch.Tensor, *, block_mask=None, x0_kv: Optional[tuple]=None) -> torch.Tensor:
+    def forward(self, xt: torch.Tensor, x0: torch.Tensor, *, block_mask=None, x0_kv: Optional[tuple]=None, query_from_x0: bool = False) -> torch.Tensor:
         B, T, D = xt.shape
         xt = xt.to(torch.bfloat16)
         x0 = x0.to(torch.bfloat16)
         # Project q from xt; K,V from xt and (optionally cached) x0
-        q = self.wq(xt)
+        q = self.wq(x0 if query_from_x0 else xt)
         if x0_kv is None:
             kv_src = torch.cat([xt, x0], dim=1)
             k = self.wk(kv_src)

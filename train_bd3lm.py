@@ -301,7 +301,7 @@ class Muon(torch.optim.Optimizer):
 # Model Components
 
 from model.utils import rms_norm as norm
-from model.utils import create_block_diff_mask, create_bd3lm_mask, create_bd3lm_xt_queries_mask
+from model.utils import create_block_diff_mask, create_bd3lm_mask, create_bd3lm_xt_queries_mask, create_bd3lm_x0_queries_mask
 from model.layers import RMSNorm, SwiGLU, MLP as MLPFallback, FiLM
 from model.attention import CausalSelfAttention, TwoStreamTransformerBlock
 
@@ -529,6 +529,19 @@ class BlockDiffusionLM(nn.Module):
             # U-Net style skip connections with gating on xt stream
             n_half = len(self.ts_blocks) // 2
             skips = []
+            # Optional top-K x0 attention updates in last layers
+            x0_update_top_k = int(getattr(self.config, 'x0_update_top_k', 0) or 0)
+            # Prepare x0 mask for queries if using flex attention
+            if self.config.use_flex_attention:
+                if 'bd3lm_ts_x0' not in self._mask_cache:
+                    self._mask_cache['bd3lm_ts_x0'] = {}
+                cache_x0 = self._mask_cache['bd3lm_ts_x0']
+                ts_mask_x0 = cache_x0.get(n_tok)
+                if ts_mask_x0 is None:
+                    ts_mask_x0 = create_bd3lm_x0_queries_mask(n_tok, self.config.block_size, device=device)
+                    cache_x0[n_tok] = ts_mask_x0
+            else:
+                ts_mask_x0 = None
             for i, block in enumerate(self.ts_blocks):
                 if getattr(self.config, 'activation_checkpoint', False):
                     import torch.utils.checkpoint as _ckpt
@@ -557,6 +570,13 @@ class BlockDiffusionLM(nn.Module):
                         exp_shape = (xt.size(0), n_tok, block.attn.n_kv_heads, block.attn.head_dim)
                         assert k0.shape == exp_shape and v0.shape == exp_shape, f"cached (k0,v0) shape mismatch, expected {exp_shape}, got {k0.shape},{v0.shape}"
                     xt = block(xt, x0e, block_mask=ts_mask, x0_kv=kv, cond=cond_vec)
+                if x0_update_top_k > 0 and i >= (len(self.ts_blocks) - x0_update_top_k):
+                    # AdaLN modulation for attention branch
+                    shift_msa, scale_msa, gate_msa, _, _, _ = block.adaln(cond_vec).unsqueeze(1).chunk(6, dim=-1)
+                    h0 = block.rms1(x0e) if block.use_prenorm else x0e
+                    h0 = h0 * (1 + scale_msa) + shift_msa
+                    attn_x0 = block.attn(h0, x0e, block_mask=ts_mask_x0, x0_kv=None, query_from_x0=True)
+                    x0e = x0e + block.res_scale * (gate_msa * attn_x0)
                 if i < n_half:
                     skips.append(xt)
                 else:
