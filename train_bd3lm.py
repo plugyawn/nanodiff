@@ -1554,6 +1554,9 @@ def main():
     parser.add_argument('--sedd_mix_frac', type=float, default=None, help='Blend SEDD loss into SUBS with this fraction')
     parser.add_argument('--residual_scale', type=float, default=None, help='Residual branch scale factor')
     parser.add_argument('--no_prenorm', action='store_true', help='Disable pre-norm in transformer blocks')
+    parser.add_argument('--n_kv_heads', type=int, default=None, help='Number of KV heads for GQA (default = n_heads)')
+    parser.add_argument('--noise_replicas', type=int, default=None, help='Replicate each batch element this many times along noise axis')
+    parser.add_argument('--sample_block_commit_k', type=int, default=None, help='Commit this many positions per step in blockwise sampler')
     # Resume
     parser.add_argument('--resume_dir', type=str, default=None, help='Resume from latest ckpt in this directory')
     parser.add_argument('--resume_path', type=str, default=None, help='Resume from this exact ckpt path')
@@ -1625,6 +1628,12 @@ def main():
         config.residual_scale = float(args.residual_scale)
     if args.no_prenorm:
         config.use_prenorm = False
+    if args.n_kv_heads is not None:
+        config.n_kv_heads = int(args.n_kv_heads)
+    if args.noise_replicas is not None:
+        config.noise_replicas = int(args.noise_replicas)
+    if args.sample_block_commit_k is not None:
+        config.sample_block_commit_k = int(args.sample_block_commit_k)
     # WandB toggles and project
     if args.wandb:
         config.use_wandb = True

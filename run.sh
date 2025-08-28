@@ -74,6 +74,11 @@ NO_FLEX_ATTN=${NO_FLEX_ATTN:-0}
 SEDD_MIX_FRAC=${SEDD_MIX_FRAC:-0.05}
 RESIDUAL_SCALE=${RESIDUAL_SCALE:-0.7071}  # ~1/sqrt(2)
 USE_PRENORM=${USE_PRENORM:-1}
+# GQA/MQA and noise replicas
+N_KV_HEADS=${N_KV_HEADS:-}
+NOISE_REPLICAS=${NOISE_REPLICAS:-}
+# Sampler parallel commit
+SAMPLE_BLOCK_COMMIT_K=${SAMPLE_BLOCK_COMMIT_K:-}
 
 # If a resume flag/arg is provided, try to reuse the latest checkpoints dir
 if [ -n "$RESUME_ARG" ]; then
@@ -165,4 +170,7 @@ torchrun \
     $(if [ -n "${SEDD_MIX_FRAC}" ]; then echo --sedd_mix_frac ${SEDD_MIX_FRAC}; fi) \
     $(if [ -n "${RESIDUAL_SCALE}" ]; then echo --residual_scale ${RESIDUAL_SCALE}; fi) \
     $(if [ "${USE_PRENORM}" != "1" ]; then echo --no_prenorm; fi) \
+    $(if [ -n "${N_KV_HEADS}" ]; then echo --n_kv_heads ${N_KV_HEADS}; fi) \
+    $(if [ -n "${NOISE_REPLICAS}" ]; then echo --noise_replicas ${NOISE_REPLICAS}; fi) \
+    $(if [ -n "${SAMPLE_BLOCK_COMMIT_K}" ]; then echo --sample_block_commit_k ${SAMPLE_BLOCK_COMMIT_K}; fi) \
     2>&1 | tee $(if [ -n "${RESUME_DIR}${RESUME_PATH}" ]; then echo -a; fi) logs/${RUN_NAME}/train.log
