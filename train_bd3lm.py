@@ -1087,7 +1087,16 @@ class BlockDiffusionTrainer:
             x0_kv_cache = None
             if getattr(self.config, 'use_two_stream', False):
                 # x0e is derived from x0 token ids; sigma=0 on x0 half
-                x0_kv_cache = model.precompute_x0_kv(x0)
+                # Unwrap DDP if necessary to access helper
+                precompute_fn = getattr(model, 'precompute_x0_kv', None)
+                if precompute_fn is None and hasattr(model, 'module'):
+                    inner = getattr(model, 'module')
+                    precompute_fn = getattr(inner, 'precompute_x0_kv', None)
+                if precompute_fn is not None:
+                    x0_kv_cache = precompute_fn(x0)
+                else:
+                    # Fallback: skip caching if helper not available
+                    x0_kv_cache = None
             # iteratively fill this block one token at a time
             while True:
                 masked = (x0[:, start:end] == mask_id)
@@ -1147,7 +1156,7 @@ class BlockDiffusionTrainer:
     @torch.no_grad()
     def generate_and_save_samples(self, model, out_dir: Path, rank: int = 0):
         if rank != 0:
-            return
+            return []
         was_training = model.training
         model.eval()
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1187,6 +1196,7 @@ class BlockDiffusionTrainer:
         finally:
             if was_training:
                 model.train()
+        return texts
 
 # -----------------------------------------------------------------------------
 # Data: NanoGPT cached FineWeb .bin reader (distributed)
@@ -1618,6 +1628,7 @@ def main():
     parser.add_argument('--sample_length', type=int, default=None, help='Sample length for generation')
     parser.add_argument('--top_p', type=float, default=None, help='Nucleus sampling top-p')
     parser.add_argument('--eval_ce_only', action='store_true', help='Eval only CE (skip BD3LM loss/var-min)')
+    parser.add_argument('--ce_eval_mode', type=str, default=None, choices=['auto','ar','bd3lm'], help="CE evaluation mode: 'auto' (default), 'ar', or 'bd3lm'")
     parser.add_argument('--compile', action='store_true', help='torch.compile the model forward pass')
     parser.add_argument('--ddp_fp16_compress', action='store_true', help='Compress gradients to FP16 during DDP all-reduce')
     parser.add_argument('--activation_checkpoint', action='store_true', help='Enable activation checkpointing in transformer blocks')
@@ -1689,6 +1700,8 @@ def main():
         config.top_p = args.top_p
     if args.eval_ce_only:
         config.ce_only = True
+    if args.ce_eval_mode is not None:
+        config.ce_eval_mode = args.ce_eval_mode
     # Arch flags
     if args.use_swiglu:
         config.use_swiglu = True
@@ -2064,7 +2077,15 @@ def main():
                         })
                     # Generate and write sample rollouts (optional)
                     if config.samples_per_eval and config.samples_per_eval > 0:
-                        trainer.generate_and_save_samples(model, out_dir=samples_dir, rank=rank)
+                        texts = trainer.generate_and_save_samples(model, out_dir=samples_dir, rank=rank)
+                        # Also print the first rollout inline for quick inspection
+                        if texts and len(texts) > 0:
+                            sample_out = texts[0]
+                            # guard against overly long terminal outputs; truncate gracefully
+                            max_chars = 800
+                            if len(sample_out) > max_chars:
+                                sample_out = sample_out[:max_chars] + "…"
+                            print("Sample[0]:", sample_out)
                 # Save periodic checkpoints
                 if trainer.step % config.save_interval == 0:
                     trainer.save_checkpoint(model, rank=rank)

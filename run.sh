@@ -61,6 +61,7 @@ DDP_FP16_COMPRESS=${DDP_FP16_COMPRESS:-1}
 RUN_NAME="bd3lm-speedrun-bs${BLOCK_SIZE}-$(date +%Y%m%d-%H%M%S)"
 RESUME_DIR=""
 RESUME_PATH=""
+CE_EVAL_MODE=${CE_EVAL_MODE:-auto}
 
 # Architecture toggles (override via env)
 # Efficient path (two-stream) defaults ON; flex attention stays ON unless explicitly disabled.
@@ -156,6 +157,7 @@ torchrun \
     $(if [ -n "${SAVE_INTERVAL}" ]; then echo --save_interval ${SAVE_INTERVAL}; fi) \
     $(if [ -n "${SAMPLES_PER_EVAL}" ]; then echo --samples_per_eval ${SAMPLES_PER_EVAL}; fi) \
     $(if [ "${EVAL_CE_ONLY}" = "1" ]; then echo --eval_ce_only; fi) \
+    $(if [ -n "${CE_EVAL_MODE}" ]; then echo --ce_eval_mode ${CE_EVAL_MODE}; fi) \
     $(if [ -n "${COMPILE}" ]; then echo --compile; fi) \
     $(if [ "${ACT_CKPT}" = "1" ]; then echo --activation_checkpoint; fi) \
     $(if [ "${DDP_FP16_COMPRESS}" = "1" ]; then echo --ddp_fp16_compress; fi) \
