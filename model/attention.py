@@ -29,20 +29,29 @@ class Rotary(nn.Module):
 
 
 class CausalSelfAttention(nn.Module):
-    def __init__(self, dim: int, n_heads: int, head_dim: int, max_seq_len: int, *,
+    def __init__(self, dim: int, n_heads: int, n_kv_heads: int, head_dim: int, max_seq_len: int, *,
                  use_rotary: bool = True, use_qk_norm: bool = True,
                  use_value_embeds: bool = True, attn_scale: float = 0.12,
                  qk_learned_scale: bool = False):
         super().__init__()
+        assert n_heads % n_kv_heads == 0, "n_heads must be multiple of n_kv_heads"
         self.num_heads = n_heads
+        self.num_kv_heads = n_kv_heads
+        self.group_size = n_heads // n_kv_heads
         self.head_dim = head_dim
-        hdim = n_heads * head_dim
+        q_dim = n_heads * head_dim
+        kv_dim = n_kv_heads * head_dim
 
-        # Merged QKV weights
-        self.qkvo_w = nn.Parameter(torch.empty(4, hdim, dim, dtype=torch.bfloat16))
+        # Separate Q, K, V, O projections to support GQA
+        self.wq = nn.Linear(dim, q_dim, bias=False, dtype=torch.bfloat16)
+        self.wk = nn.Linear(dim, kv_dim, bias=False, dtype=torch.bfloat16)
+        self.wv = nn.Linear(dim, kv_dim, bias=False, dtype=torch.bfloat16)
+        self.wo = nn.Linear(q_dim, dim, bias=False, dtype=torch.bfloat16)
         with torch.no_grad():
-            self.qkvo_w[:3].normal_(std=0.5 * (dim ** -0.5))
-            self.qkvo_w[3].zero_()
+            nn.init.normal_(self.wq.weight, std=0.5 * (dim ** -0.5))
+            nn.init.normal_(self.wk.weight, std=0.5 * (dim ** -0.5))
+            nn.init.normal_(self.wv.weight, std=0.5 * (dim ** -0.5))
+            nn.init.zeros_(self.wo.weight)
 
         self.rotary = Rotary(head_dim, max_seq_len) if use_rotary else None
         self.use_qk_norm = use_qk_norm
@@ -56,13 +65,13 @@ class CausalSelfAttention(nn.Module):
         # Optional value embeddings
         self.use_value_embeds = use_value_embeds
         if use_value_embeds:
-            self.value_embeds = nn.Parameter(torch.randn(max_seq_len, hdim).bfloat16() * 0.02)
+            self.value_embeds = nn.Parameter(torch.randn(max_seq_len, q_dim).bfloat16() * 0.02)
             self.lambda_v = nn.Parameter(torch.tensor([0.9, 0.1], dtype=torch.bfloat16))
 
     def _project_qkv(self, x: torch.Tensor):
-        qkv = F.linear(x, self.qkvo_w[:3].flatten(end_dim=1))
-        B, T, _ = qkv.shape
-        q, k, v = qkv.view(B, T, 3, self.num_heads, self.head_dim).unbind(2)
+        q = self.wq(x).view(x.size(0), x.size(1), self.num_heads, self.head_dim)
+        k = self.wk(x).view(x.size(0), x.size(1), self.num_kv_heads, self.head_dim)
+        v = self.wv(x).view(x.size(0), x.size(1), self.num_kv_heads, self.head_dim)
         return q, k, v
 
     def forward(self, x: torch.Tensor, *, block_mask=None) -> torch.Tensor:
@@ -77,12 +86,23 @@ class CausalSelfAttention(nn.Module):
         if self.qk_learned_scale:
             # Broadcast per-head learned scales over (B, T, H, D)
             q = q * self.q_scale.view(1, 1, self.num_heads, 1)
-            k = k * self.k_scale.view(1, 1, self.num_heads, 1)
 
         if self.rotary is not None:
             q = self.rotary(q.transpose(1, 2)).transpose(1, 2)
             k = self.rotary(k.transpose(1, 2)).transpose(1, 2)
 
+        # Delay value-embed mix until after possible KV head expansion
+
+        # Expand K,V heads to full Q heads for grouped-query attention
+        if self.num_kv_heads != self.num_heads:
+            # repeat each kv head group_size times along head dimension
+            k = k.repeat_interleave(self.group_size, dim=2)
+            v = v.repeat_interleave(self.group_size, dim=2)
+        # Apply learned k scale after expansion so shapes match
+        if self.qk_learned_scale:
+            k = k * self.k_scale.view(1, 1, self.num_heads, 1)
+
+        # Optional value embeddings after expansion
         if self.use_value_embeds:
             ve = self.value_embeds[:T].view(1, T, self.num_heads, self.head_dim)
             v = self.lambda_v[0] * v + self.lambda_v[1] * ve
@@ -111,7 +131,7 @@ class CausalSelfAttention(nn.Module):
             ).transpose(1, 2)
 
         y = y.contiguous().view(B, T, self.num_heads * self.head_dim)
-        y = F.linear(y, self.qkvo_w[3])
+        y = self.wo(y)
         return y
 
 
@@ -120,17 +140,25 @@ class TwoStreamBlock(nn.Module):
     Keeps a single projection set and computes q from xt and k,v from cat(x0, xt).
     """
 
-    def __init__(self, dim: int, n_heads: int, head_dim: int, max_seq_len: int,
+    def __init__(self, dim: int, n_heads: int, n_kv_heads: int, head_dim: int, max_seq_len: int,
                  use_rotary: bool = True, use_qk_norm: bool = True,
                  attn_scale: float = 0.12, qk_learned_scale: bool = False):
         super().__init__()
+        assert n_heads % n_kv_heads == 0
         self.n_heads = n_heads
+        self.n_kv_heads = n_kv_heads
+        self.group_size = n_heads // n_kv_heads
         self.head_dim = head_dim
-        hdim = n_heads * head_dim
-        self.qkv_proj = nn.Parameter(torch.empty(3, hdim, dim, dtype=torch.bfloat16))
-        self.out_proj = nn.Parameter(torch.zeros(dim, hdim, dtype=torch.bfloat16))
+        q_dim = n_heads * head_dim
+        kv_dim = n_kv_heads * head_dim
+        self.wq = nn.Linear(dim, q_dim, bias=False, dtype=torch.bfloat16)
+        self.wk = nn.Linear(dim, kv_dim, bias=False, dtype=torch.bfloat16)
+        self.wv = nn.Linear(dim, kv_dim, bias=False, dtype=torch.bfloat16)
+        self.wo = nn.Linear(q_dim, dim, bias=False, dtype=torch.bfloat16)
         with torch.no_grad():
-            self.qkv_proj.normal_(std=0.5 * (dim ** -0.5))
+            nn.init.normal_(self.wq.weight, std=0.5 * (dim ** -0.5))
+            nn.init.normal_(self.wk.weight, std=0.5 * (dim ** -0.5))
+            nn.init.normal_(self.wv.weight, std=0.5 * (dim ** -0.5))
 
         self.use_qk_norm = use_qk_norm
         self.rotary = Rotary(head_dim, max_seq_len * 2) if use_rotary else None
@@ -145,14 +173,14 @@ class TwoStreamBlock(nn.Module):
         xt = xt.to(torch.bfloat16)
         x0 = x0.to(torch.bfloat16)
         # Project q from xt; k,v from concat(x0, xt)
-        q = F.linear(xt, self.qkv_proj[0])
+        q = self.wq(xt)
         kv_src = torch.cat([xt, x0], dim=1)
-        k = F.linear(kv_src, self.qkv_proj[1])
-        v = F.linear(kv_src, self.qkv_proj[2])
+        k = self.wk(kv_src)
+        v = self.wv(kv_src)
         # reshape
         q = q.view(B, T, self.n_heads, self.head_dim)
-        k = k.view(B, 2 * T, self.n_heads, self.head_dim)
-        v = v.view(B, 2 * T, self.n_heads, self.head_dim)
+        k = k.view(B, 2 * T, self.n_kv_heads, self.head_dim)
+        v = v.view(B, 2 * T, self.n_kv_heads, self.head_dim)
 
         if self.use_qk_norm:
             q = F.rms_norm(q, (q.size(-1),))
@@ -160,11 +188,17 @@ class TwoStreamBlock(nn.Module):
         if self.qk_learned_scale:
             # Broadcast per-head learned scales over (B, T, H, D)
             q = q * self.q_scale.view(1, 1, self.n_heads, 1)
-            k = k * self.k_scale.view(1, 1, self.n_heads, 1)
 
         if self.rotary is not None:
             q = self.rotary(q.transpose(1, 2)).transpose(1, 2)
             k = self.rotary(k.transpose(1, 2)).transpose(1, 2)
+
+        # Expand kv heads to match q heads
+        if self.n_kv_heads != self.n_heads:
+            k = k.repeat_interleave(self.group_size, dim=2)
+            v = v.repeat_interleave(self.group_size, dim=2)
+        if self.qk_learned_scale:
+            k = k * self.k_scale.view(1, 1, self.n_heads, 1)
 
         # Use flex_attention over concatenated kv; block_mask should be the BD3LM one
         if block_mask is not None:
@@ -189,7 +223,7 @@ class TwoStreamBlock(nn.Module):
             ).transpose(1, 2)
 
         y = y.contiguous().view(B, T, self.n_heads * self.head_dim)
-        y = F.linear(y, self.out_proj)
+        y = self.wo(y)
         return y
 
 
@@ -198,7 +232,7 @@ class TwoStreamTransformerBlock(nn.Module):
     Updates xt stream using cross-attn to k/v from xt||x0 and a feedforward.
     """
 
-    def __init__(self, dim: int, n_heads: int, head_dim: int, max_seq_len: int,
+    def __init__(self, dim: int, n_heads: int, n_kv_heads: int, head_dim: int, max_seq_len: int,
                  use_rotary: bool = True, use_qk_norm: bool = True,
                  use_value_embeds: bool = False, attn_scale: float = 0.12,
                  qk_learned_scale: bool = False, use_swiglu: bool = False,
@@ -208,7 +242,7 @@ class TwoStreamTransformerBlock(nn.Module):
         self.use_prenorm = use_prenorm
         self.res_scale = residual_scale
         self.attn = TwoStreamBlock(
-            dim, n_heads, head_dim, max_seq_len,
+            dim, n_heads, n_kv_heads, head_dim, max_seq_len,
             use_rotary=use_rotary, use_qk_norm=use_qk_norm,
             attn_scale=attn_scale, qk_learned_scale=qk_learned_scale
         )

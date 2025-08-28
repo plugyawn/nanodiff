@@ -52,6 +52,7 @@ class Config:
     n_layers: int = 12
     n_heads: int = 12
     head_dim: int = 64
+    n_kv_heads: int = 12  # for GQA/MQA; defaults to n_heads
     vocab_size: int = 50304  # Original vocabulary
     max_seq_len: int = 1024
     
@@ -319,6 +320,7 @@ class TransformerBlock(nn.Module):
         self.attn = CausalSelfAttention(
             dim=config.dim,
             n_heads=config.n_heads,
+            n_kv_heads=getattr(config, 'n_kv_heads', config.n_heads),
             head_dim=config.head_dim,
             max_seq_len=attn_max_len,
             use_rotary=config.use_rotary,
@@ -377,6 +379,7 @@ class BlockDiffusionLM(nn.Module):
                 TwoStreamTransformerBlock(
                     dim=config.dim,
                     n_heads=config.n_heads,
+                    n_kv_heads=getattr(config, 'n_kv_heads', config.n_heads),
                     head_dim=config.head_dim,
                     max_seq_len=attn_len,
                     use_rotary=config.use_rotary,
