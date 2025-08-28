@@ -180,7 +180,11 @@ class TwoStreamBlock(nn.Module):
             v = self.wv(kv_src)
         else:
             k0, v0 = x0_kv
-            assert k0.dim() == 4 and v0.dim() == 4, "x0_kv must be (k0,v0) with shapes (B,T,Hkv,D)"
+            assert k0.dim() == 4 and v0.dim() == 4, "x0_kv must be (k0,v0) with shapes (B,T,H_kv,D)"
+            assert k0.size(0) == B and v0.size(0) == B, "x0_kv batch size mismatch"
+            assert k0.size(1) == T and v0.size(1) == T, "x0_kv seq len mismatch vs xt/x0"
+            assert k0.size(2) == self.n_kv_heads and v0.size(2) == self.n_kv_heads, "x0_kv H_kv mismatch"
+            assert k0.size(3) == self.head_dim and v0.size(3) == self.head_dim, "x0_kv head_dim mismatch"
             # K,V for xt tokens
             kx = self.wk(xt)
             vx = self.wv(xt)

@@ -551,6 +551,12 @@ class BlockDiffusionLM(nn.Module):
                         if x0_kv_cache is not None:
                             assert isinstance(x0_kv_cache, list) and len(x0_kv_cache) == len(self.ts_blocks), "x0_kv_cache must be list[(k0,v0)] per layer"
                             kv = x0_kv_cache[i]
+                            # shape guards for cached K/V
+                            assert isinstance(kv, tuple) and len(kv) == 2, "x0_kv_cache entries must be (k0,v0)"
+                            k0, v0 = kv
+                            assert k0.dim() == 4 and v0.dim() == 4, "cached (k0,v0) must be rank-4 tensors"
+                            exp_shape = (xt.size(0), n_tok, block.attn.n_kv_heads, block.attn.head_dim)
+                            assert k0.shape == exp_shape and v0.shape == exp_shape, f"cached (k0,v0) shape mismatch, expected {exp_shape}, got {k0.shape},{v0.shape}"
                         return block(_xt, x0e, block_mask=ts_mask, x0_kv=kv)
                     xt = _ckpt.checkpoint(_fn, xt)
                 else:
@@ -558,6 +564,12 @@ class BlockDiffusionLM(nn.Module):
                     if x0_kv_cache is not None:
                         assert isinstance(x0_kv_cache, list) and len(x0_kv_cache) == len(self.ts_blocks), "x0_kv_cache must be list[(k0,v0)] per layer"
                         kv = x0_kv_cache[i]
+                        # shape guards for cached K/V
+                        assert isinstance(kv, tuple) and len(kv) == 2, "x0_kv_cache entries must be (k0,v0)"
+                        k0, v0 = kv
+                        assert k0.dim() == 4 and v0.dim() == 4, "cached (k0,v0) must be rank-4 tensors"
+                        exp_shape = (xt.size(0), n_tok, block.attn.n_kv_heads, block.attn.head_dim)
+                        assert k0.shape == exp_shape and v0.shape == exp_shape, f"cached (k0,v0) shape mismatch, expected {exp_shape}, got {k0.shape},{v0.shape}"
                     xt = block(xt, x0e, block_mask=ts_mask, x0_kv=kv)
                 if i < n_half:
                     skips.append(xt)
@@ -631,7 +643,9 @@ class BlockDiffusionLM(nn.Module):
         kv_list = []
         for i, block in enumerate(self.ts_blocks):
             k0, v0 = block.project_x0_kv(x0e)
-            assert k0.shape[:2] == (B, T) and v0.shape[:2] == (B, T), "x0_kv wrong shape"
+            # strict shape guards
+            exp = (B, T, block.attn.n_kv_heads, block.attn.head_dim)
+            assert k0.shape == exp and v0.shape == exp, f"x0_kv wrong shape for layer {i}: expected {exp}, got {k0.shape},{v0.shape}"
             kv_list.append((k0, v0))
         return kv_list
 
