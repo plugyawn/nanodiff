@@ -1558,6 +1558,7 @@ def main():
     parser.add_argument('--n_kv_heads', type=int, default=None, help='Number of KV heads for GQA (default = n_heads)')
     parser.add_argument('--noise_replicas', type=int, default=None, help='Replicate each batch element this many times along noise axis')
     parser.add_argument('--sample_block_commit_k', type=int, default=None, help='Commit this many positions per step in blockwise sampler')
+    parser.add_argument('--grad_accum_steps', type=int, default=None, help='Accumulate gradients over this many micro-steps')
     # Resume
     parser.add_argument('--resume_dir', type=str, default=None, help='Resume from latest ckpt in this directory')
     parser.add_argument('--resume_path', type=str, default=None, help='Resume from this exact ckpt path')
@@ -1635,6 +1636,8 @@ def main():
         config.noise_replicas = int(args.noise_replicas)
     if args.sample_block_commit_k is not None:
         config.sample_block_commit_k = int(args.sample_block_commit_k)
+    if args.grad_accum_steps is not None:
+        config.grad_accum_steps = int(args.grad_accum_steps)
     # WandB toggles and project
     if args.wandb:
         config.use_wandb = True
