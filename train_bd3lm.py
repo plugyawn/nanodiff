@@ -103,6 +103,9 @@ class Config:
     compile_model: bool = False
     compile_zeropower: bool = False
     activation_checkpoint: bool = False
+    # EMA for eval stability
+    use_ema_for_eval: bool = True
+    ema_decay: float = 0.999
     
     # System
     device: str = "cuda"
@@ -660,6 +663,11 @@ class BlockDiffusionTrainer:
         
         # Checkpoint dir (set in main)
         self.ckpt_dir: Optional[Path] = None
+
+        # Exponential Moving Average of parameters (for eval)
+        self.ema = None
+        if getattr(config, 'use_ema_for_eval', False):
+            self.ema = _ModelEMA(model, decay=getattr(config, 'ema_decay', 0.999))
         
     # ---------------------- Noise schedules (official) ----------------------
     class _Noise:
@@ -900,6 +908,9 @@ class BlockDiffusionTrainer:
             self.optimizer_muon.step()
         if self.optimizer_adam is not None and len(list(self.optimizer_adam.param_groups[0]['params'])):
             self.optimizer_adam.step()
+        # Update EMA after the step
+        if self.ema is not None:
+            self.ema.update(self.model)
         self.step += 1
         
         return loss.item()
@@ -1255,6 +1266,10 @@ def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: F
     # Always use inference mode to avoid autograd overhead and torch.compile graph churn
     # Preserve/restore model training mode around eval
     model = trainer.model
+    # Optionally swap in EMA weights for evaluation
+    ema_ctx = getattr(trainer, 'ema', None)
+    if ema_ctx is not None and getattr(config, 'use_ema_for_eval', False):
+        ema_ctx.swap_in(model)
     was_training = model.training
     model.eval()
     # Use bfloat16 autocast for faster matmuls if CUDA is available
@@ -1280,6 +1295,8 @@ def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: F
             dist.all_reduce(total_ce, op=dist.ReduceOp.SUM)
             dist.all_reduce(total_ce_tokens, op=dist.ReduceOp.SUM)
         # restore training state
+        if ema_ctx is not None and getattr(config, 'use_ema_for_eval', False):
+            ema_ctx.swap_out(model)
         if was_training:
             model.train()
         return {
@@ -1313,6 +1330,8 @@ def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: F
             dist.all_reduce(total_ce, op=dist.ReduceOp.SUM)
             dist.all_reduce(total_ce_tokens, op=dist.ReduceOp.SUM)
         # restore training state
+        if ema_ctx is not None and getattr(config, 'use_ema_for_eval', False):
+            ema_ctx.swap_out(model)
         if was_training:
             model.train()
         return {
@@ -1387,6 +1406,8 @@ def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: F
         dist.all_reduce(ce_accum, op=dist.ReduceOp.SUM)
         dist.all_reduce(ce_tokens, op=dist.ReduceOp.SUM)
         # restore training state
+        if ema_ctx is not None and getattr(config, 'use_ema_for_eval', False):
+            ema_ctx.swap_out(model)
         if was_training:
             model.train()
         return {
@@ -1394,12 +1415,54 @@ def evaluate_val_loss(trainer: BlockDiffusionTrainer, config: Config, sampler: F
             'ce': (ce_accum / ce_tokens).item(),
         }
     # restore training state
+    if ema_ctx is not None and getattr(config, 'use_ema_for_eval', False):
+        ema_ctx.swap_out(model)
     if was_training:
         model.train()
     return {
         'bd3lm': (chosen_losses.mean() if chosen_losses.numel() > 0 else torch.tensor(float('inf'), device=trainer.device)).item(),
         'ce': (ce_accum / torch.clamp_min(ce_tokens, 1.0)).item(),
     }
+
+# ------------------------------- EMA Helper ---------------------------------
+
+class _ModelEMA:
+    def __init__(self, model: nn.Module, decay: float = 0.999):
+        self.decay = decay
+        self.shadow = {}
+        self.backup = None
+        for name, p in model.named_parameters():
+            if p.requires_grad:
+                self.shadow[name] = p.detach().clone().to(device=p.device, dtype=p.dtype)
+
+    @torch.no_grad()
+    def update(self, model: nn.Module):
+        d = self.decay
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            assert name in self.shadow
+            self.shadow[name].mul_(d).add_(p.detach(), alpha=(1.0 - d))
+
+    @torch.no_grad()
+    def swap_in(self, model: nn.Module):
+        # Save current params and load EMA params
+        self.backup = {}
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            self.backup[name] = p.detach().clone()
+            p.copy_(self.shadow[name])
+
+    @torch.no_grad()
+    def swap_out(self, model: nn.Module):
+        if self.backup is None:
+            return
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            p.copy_(self.backup[name])
+        self.backup = None
 
 # -----------------------------------------------------------------------------
 # Main
